@@ -1,0 +1,22 @@
+# IDE (IntelliJ / Android Studio) 関連
+*.iml
+/.idea/
+
+# Gradle・ビルド関連
+.gradle/
+/build/
+
+# ローカル設定・キャッシュ・一時ファイル
+/local.properties
+.DS_Store
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# プロジェクト固有の除外フォルダ・ファイル
+/north_2/
+/worker/
+/kotlin/
+/asset/
+/参考/
+/参考.zip
