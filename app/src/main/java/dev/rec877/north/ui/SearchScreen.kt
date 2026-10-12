@@ -60,6 +60,9 @@ fun SearchScreen(vm: MainViewModel, loader: ImageLoader, actions: PostActions, l
     val s = vm.search
     val focus = LocalFocusManager.current
     var focused by remember { mutableStateOf(false) }
+    // 空の一覧に対する scrollToItem は、後から項目が入ったときに以前の位置を復元してしまう。
+    // 初回の検索結果が描画可能になった後、検索世代ごとに一度だけ先頭へ戻す。
+    var centeredResultVersion by remember { mutableStateOf(-1) }
     val nearEnd by remember(listState) {
         derivedStateOf {
             val info = listState.layoutInfo
@@ -67,7 +70,12 @@ fun SearchScreen(vm: MainViewModel, loader: ImageLoader, actions: PostActions, l
             last >= info.totalItemsCount - 2
         }
     }
-    LaunchedEffect(s.version) { listState.scrollToItem(0) }
+    LaunchedEffect(s.version, s.loading, s.results.size) {
+        if (s.searched && !s.loading && s.results.isNotEmpty() && centeredResultVersion != s.version) {
+            listState.scrollToItem(0)
+            centeredResultVersion = s.version
+        }
+    }
     // 検索タブを開き直すたびに、保存済みの末尾位置ではなく先頭から表示する。
     LaunchedEffect(Unit) { listState.scrollToItem(0) }
 

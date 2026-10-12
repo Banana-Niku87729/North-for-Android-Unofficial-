@@ -4,6 +4,12 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// 公開して問題ない Cloudflare Worker のURLだけを渡す。Discord Webhook はWorkerの秘密情報に置く。
+val bugReportEndpoint = (findProperty("BUG_REPORT_ENDPOINT") as String?)
+    ?.replace("\\", "\\\\")
+    ?.replace("\"", "\\\"")
+    .orEmpty()
+
 android {
     namespace = "dev.rec877.north"
     compileSdk {
@@ -16,6 +22,8 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
+
+        buildConfigField("String", "BUG_REPORT_ENDPOINT", "\"$bugReportEndpoint\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

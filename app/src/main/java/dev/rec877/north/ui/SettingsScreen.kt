@@ -53,7 +53,8 @@ fun SettingsScreen(vm: MainViewModel) {
             return
         }
         "display" -> { DisplaySettings(vm) { page = "appearance" }; return }
-        "accessibility" -> { AccessibilitySettings(vm) { page = "appearance" }; return }
+        "accessibility" -> { AccessibilitySettings(vm, onBack = { page = "appearance" }, onCustomize = { page = "customize" }); return }
+        "customize" -> { AppCustomizationSettings(vm) { page = "accessibility" }; return }
         null -> Unit
         else -> { SettingInfoPage(vm, page!!, { page = null }, ::openNorthSettings) ; return }
     }
@@ -108,12 +109,25 @@ fun SettingsScreen(vm: MainViewModel) {
     }
 }
 
-@Composable private fun AccessibilitySettings(vm: MainViewModel, onBack: () -> Unit) {
+@Composable private fun AccessibilitySettings(vm: MainViewModel, onBack: () -> Unit, onCustomize: () -> Unit) {
     val c = North.colors
     Column(Modifier.fillMaxSize().background(c.bg)) {
         SettingsHeader("アクセシビリティ", onBack)
         SettingSwitch("動きを減らす", "画面のアニメーションを最小限にします", vm.reduceMotion, vm::updateReduceMotion)
         SettingSwitch("コントラストを上げる", "文字や境界を見分けやすくします", vm.highContrast, vm::updateHighContrast)
+        SettingLink("アプリのカスタマイズ", "端末に合わせて投稿ボタンの位置を調整します") { onCustomize() }
+    }
+}
+
+@Composable private fun AppCustomizationSettings(vm: MainViewModel, onBack: () -> Unit) {
+    val c = North.colors
+    Column(Modifier.fillMaxSize().background(c.bg)) {
+        SettingsHeader("アプリのカスタマイズ", onBack)
+        Text("投稿ボタン", color = c.text, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp))
+        Text("ナビゲーションや端末固有の操作領域と重なる場合に、位置を変更できます。", color = c.textMuted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp))
+        Box(Modifier.padding(16.dp).fillMaxWidth().clip(CircleShape).background(c.accent).clickable { vm.setComposeButtonEditing(true); vm.popToRoot() }.padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
+            Text("画面上で位置を調整する", color = c.textOnAccent, fontWeight = FontWeight.Bold)
+        }
     }
 }
 

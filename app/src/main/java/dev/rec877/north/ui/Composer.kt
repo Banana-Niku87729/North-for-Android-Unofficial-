@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -28,6 +29,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.TextButton
@@ -43,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
@@ -55,6 +58,7 @@ import coil3.compose.AsyncImage
 import dev.rec877.north.User
 import dev.rec877.north.PollInput
 import dev.rec877.north.ui.theme.North
+import kotlinx.coroutines.delay
 
 private const val MAX_IMAGES = 4
 private const val MAX_WEIGHT = 280
@@ -77,12 +81,14 @@ fun Composer(
     draftsLoading: Boolean = false,
     onOpenDrafts: (() -> Unit)? = null,
     onSubmitWithSavedMediaIds: ((text: String, images: List<Uri>, savedMediaIds: List<String>, onDone: () -> Unit) -> Unit)? = null,
+    onReportIssue: (String) -> Unit = {},
 ) {
     val c = North.colors
     var text by rememberSaveable { mutableStateOf("") }
     var images by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var restoredMediaIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var draftPickerOpen by remember { mutableStateOf(false) }
+    var directPostApproved by rememberSaveable(text) { mutableStateOf(false) }
 
     LaunchedEffect(clearDraftVersion) {
         if (clearDraftVersion > 0) { text = ""; images = emptyList() }
@@ -97,7 +103,16 @@ fun Composer(
     }
 
     val weight = postWeight(text)
-    val canSend = !posting && (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty()) && weight <= MAX_WEIGHT
+    val hasDeveloperTag = text.contains("#おうどんに伝えたい")
+    val canSend = !posting && (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty()) && weight <= MAX_WEIGHT && (!hasDeveloperTag || directPostApproved)
+
+    if (hasDeveloperTag) {
+        AppBugReportWarning(
+            text = text,
+            onReport = onReportIssue,
+            onDirectPostApproved = { directPostApproved = it },
+        )
+    }
 
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -249,6 +264,7 @@ fun FullScreenComposer(
     onOpenDrafts: () -> Unit,
     onSaveDraft: (String, List<Uri>, List<String>, () -> Unit) -> Unit,
     onSubmit: (text: String, images: List<Uri>, existingMediaIds: List<String>, poll: PollInput?, onDone: () -> Unit) -> Unit,
+    onReportIssue: (String) -> Unit = {},
 ) {
     val c = North.colors
     var text by rememberSaveable { mutableStateOf("") }
@@ -261,6 +277,7 @@ fun FullScreenComposer(
     var pollDays by remember { mutableStateOf("1") }
     var pollHours by remember { mutableStateOf("0") }
     var pollMinutes by remember { mutableStateOf("0") }
+    var directPostApproved by rememberSaveable(text) { mutableStateOf(false) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES)) { picked ->
         images = (images + picked).distinct().take(MAX_IMAGES)
     }
@@ -269,7 +286,8 @@ fun FullScreenComposer(
     val submittedOptions = normalizedPoll?.filter { it.isNotBlank() }
     val durationMinutes = ((pollDays.toIntOrNull() ?: -1) * 1440) + ((pollHours.toIntOrNull() ?: -1) * 60) + (pollMinutes.toIntOrNull() ?: -1)
     val pollValid = submittedOptions == null || (submittedOptions.size in 2..4 && submittedOptions.all { it.length <= 25 } && durationMinutes in 5..10080)
-    val canSend = !posting && (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty() || normalizedPoll != null) && weight <= MAX_WEIGHT && pollValid
+    val hasDeveloperTag = text.contains("#おうどんに伝えたい")
+    val canSend = !posting && (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty() || normalizedPoll != null) && weight <= MAX_WEIGHT && pollValid && (!hasDeveloperTag || directPostApproved)
 
     Column(
         Modifier.fillMaxSize().background(c.bg).windowInsetsPadding(WindowInsets.safeDrawing).imePadding()
@@ -293,6 +311,14 @@ fun FullScreenComposer(
             ) { Text(if (posting) "送信中…" else "ポストする", color = c.textOnAccent, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp) }
         }
         HorizontalDivider(color = c.border)
+        if (hasDeveloperTag) {
+            AppBugReportWarning(
+                text = text,
+                onReport = onReportIssue,
+                onDirectPostApproved = { directPostApproved = it },
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+            )
+        }
         Row(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (me != null) Avatar(me, 48.dp, loader) else Box(Modifier.size(48.dp).clip(CircleShape).background(c.elev3))
             Column(Modifier.weight(1f)) {
@@ -384,6 +410,114 @@ fun FullScreenComposer(
         text = { Text("投稿せずに閉じると、入力内容と添付を下書きへ保存できます。", color = c.textMuted) },
         confirmButton = { TextButton(onClick = { onSaveDraft(text, images, restoredMediaIds) { confirmSaveOnClose = false; onClose() } }) { Text("保存して閉じる", color = c.accent, fontWeight = FontWeight.Bold) } },
         dismissButton = { TextButton(onClick = { confirmSaveOnClose = false; onClose() }) { Text("保存しない", color = c.danger) } },
+    )
+}
+
+/** 開発者向けタグを含む投稿を、誤って一般のSNS不具合窓口へ流さないための確認UI。 */
+@Composable
+private fun AppBugReportWarning(
+    text: String,
+    onReport: (String) -> Unit,
+    onDirectPostApproved: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = North.colors
+    var holding by rememberSaveable(text) { mutableStateOf(false) }
+    var approved by rememberSaveable(text) { mutableStateOf(false) }
+    var secondsRemaining by rememberSaveable(text) { mutableStateOf(30) }
+    var holdProgress by rememberSaveable(text) { mutableStateOf(0f) }
+    var reportFormOpen by rememberSaveable(text) { mutableStateOf(false) }
+    var issueDescription by rememberSaveable(text) { mutableStateOf("") }
+
+    LaunchedEffect(holding, approved) {
+        if (!holding || approved) return@LaunchedEffect
+        secondsRemaining = 30
+        holdProgress = 0f
+        repeat(30) { index ->
+            delay(1_000)
+            if (!holding) return@LaunchedEffect
+            secondsRemaining = 29 - index
+            holdProgress = (index + 1) / 30f
+        }
+        if (holding) approved = true
+    }
+    // 指を離すと長押しの進捗は残さず、次回は最初から数える。
+    LaunchedEffect(holding) {
+        if (!holding && !approved) {
+            secondsRemaining = 30
+            holdProgress = 0f
+        }
+    }
+    LaunchedEffect(approved) { onDirectPostApproved(approved) }
+
+    Column(
+        modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.elev2).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("アプリ版への不具合報告を検出しました", color = c.text, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
+        Text("開発者へ直接送れば、この内容はSNSに公開されません。通常投稿する場合は誤送信防止のため30秒間の長押しが必要です。", color = c.textMuted, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.clip(CircleShape).background(c.accent).clickable { reportFormOpen = true }.padding(horizontal = 13.dp, vertical = 9.dp),
+                contentAlignment = Alignment.Center,
+            ) { Text("開発者に知らせる", color = c.textOnAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+            if (approved) {
+                Text("通常投稿を許可しました", color = c.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            } else {
+                Box(
+                    Modifier
+                        .clip(CircleShape)
+                        .background(c.elev3)
+                        .pointerInput(text) {
+                            detectTapGestures(onPress = {
+                                holding = true
+                                tryAwaitRelease()
+                                holding = false
+                            })
+                        }
+                        .padding(horizontal = 13.dp, vertical = 9.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier
+                            .align(Alignment.CenterStart)
+                            .fillMaxHeight()
+                            .fillMaxWidth(holdProgress)
+                            .background(c.accent),
+                    )
+                    Text("そのまま投稿（${secondsRemaining}秒長押し）", color = c.text, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+    if (reportFormOpen) AlertDialog(
+        onDismissRequest = { reportFormOpen = false },
+        containerColor = c.elev1,
+        title = { Text("アプリの開発者に知らせる", color = c.text, fontWeight = FontWeight.ExtraBold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("どのような不具合か、再現する手順や期待した動きを入力してください。元の投稿内容も添えて、SNSには公開せず開発者へ送ります。", color = c.textMuted, fontSize = 13.sp)
+                BasicTextField(
+                    value = issueDescription,
+                    onValueChange = { issueDescription = it.take(1_500) },
+                    textStyle = TextStyle(color = c.text, fontSize = 15.sp),
+                    cursorBrush = SolidColor(c.accent),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 130.dp).background(c.elev2, RoundedCornerShape(10.dp)).padding(12.dp),
+                    decorationBox = { inner -> Box { if (issueDescription.isEmpty()) Text("例: 検索後に一覧が途中までスクロールされる\n再現手順: 検索タブで…", color = c.textMuted, fontSize = 14.sp); inner() } },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = issueDescription.isNotBlank(),
+                onClick = {
+                    onReport("$text\n\n【不具合の詳細】\n${issueDescription.trim()}")
+                    reportFormOpen = false
+                    issueDescription = ""
+                },
+            ) { Text("送信", color = c.accent, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = { TextButton(onClick = { reportFormOpen = false }) { Text("戻る", color = c.textMuted) } },
     )
 }
 

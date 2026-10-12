@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # north Android クライアント（最小構成）
 
 ログイン（OAuth + PKCE）→ ホームタイムライン → 投稿 → いいね、まで。
@@ -25,3 +26,7 @@
 - 認可codeはPKCEのverifierが無いと使えないので、Worker経由でも安全です（Workerはcodeを保存・ログしません）。
 - 更新トークンはローテーション式。`AuthRepository` のMutexと `commit()` による即時保存は外さないでください。
 - このコードはAndroid SDKの無い環境で書いたため、**ビルド確認はしていません**（Workerは構文チェックのみ実施）。
+=======
+# North-for-Android-Unofficial-
+非公式です
+>>>>>>> ceff7b2436b364c99ffedec5fa6694e1da91ccc8

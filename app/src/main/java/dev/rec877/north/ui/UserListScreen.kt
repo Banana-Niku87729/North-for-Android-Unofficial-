@@ -1,6 +1,7 @@
 package dev.rec877.north.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,12 +42,22 @@ class PagedUsers(private val fetch: suspend (String?) -> UserPage) {
     var loaded by mutableStateOf(false); private set
     suspend fun first() { loading = true; try { fetch(null).also { items = it.items.distinctBy(User::id); cursor = it.nextCursor; loaded = true } } finally { loading = false } }
     suspend fun more() { val next = cursor ?: return; if (loading) return; loading = true; try { fetch(next).also { items = (items + it.items).distinctBy(User::id); cursor = it.nextCursor } } finally { loading = false } }
+    fun update(id: String, transform: (User) -> User) {
+        items = items.map { if (it.id == id) transform(it) else it }
+    }
 }
 
 class UserListController(vm: MainViewModel, handle: String, kind: String) : ScreenController {
     val users = PagedUsers { cursor -> when (kind) { "followers" -> vm.api.userFollowers(handle, cursor); "likes" -> vm.api.postLikes(handle, cursor); "retweets" -> vm.api.retweets(handle, cursor); else -> vm.api.userFollowing(handle, cursor) } }
     private var started = false
     fun start(vm: MainViewModel) { if (!started) { started = true; vm.launchSafely { users.first() } } }
+    fun toggleFollow(vm: MainViewModel, target: User) {
+        val following = !target.following
+        users.update(target.id) { it.copy(following = following) }
+        vm.launchSafely(onError = { users.update(target.id) { target } }) {
+            if (following) vm.api.follow(target.handle) else vm.api.unfollow(target.handle)
+        }
+    }
     override fun patch(id: String, f: (dev.rec877.north.Post) -> dev.rec877.north.Post) = Unit
     override fun onReplyPosted() = Unit
 }
@@ -72,15 +84,30 @@ fun UserListScreen(vm: MainViewModel, loader: ImageLoader, handle: String, kind:
         HorizontalDivider(color = c.border)
         LazyColumn(Modifier.fillMaxSize(), state = listState) {
             items(ctl.users.items, key = User::id) { user ->
-                Row(Modifier.fillMaxWidth().clickable { vm.openUser(user.handle) }.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Avatar(user, 48.dp, loader, Modifier.size(48.dp))
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(user.name, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            UserBadges(user)
+                val canFollow = (kind == "followers" || kind == "following") && user.id != vm.ui.me?.id
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.weight(1f).clickable { vm.openUser(user.handle) }, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Avatar(user, 48.dp, loader, Modifier.size(48.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(user.name, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                UserBadges(user)
+                            }
+                            Text("@${user.handle}", color = c.textMuted, fontSize = 14.sp)
+                            user.bio?.takeIf(String::isNotBlank)?.let { Text(it, color = c.text, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp)) }
                         }
-                        Text("@${user.handle}", color = c.textMuted, fontSize = 14.sp)
-                        user.bio?.takeIf(String::isNotBlank)?.let { Text(it, color = c.text, fontSize = 14.sp, modifier = Modifier.padding(top = 4.dp)) }
+                    }
+                    if (canFollow) {
+                        val shape = RoundedCornerShape(20.dp)
+                        Box(
+                            Modifier
+                                .border(1.dp, if (user.following) c.border else c.accent, shape)
+                                .clickable { ctl.toggleFollow(vm, user) }
+                                .padding(horizontal = 12.dp, vertical = 7.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(if (user.following) "フォロー中" else "フォロー", color = if (user.following) c.text else c.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

@@ -165,6 +165,7 @@ fun ThreadScreen(vm: MainViewModel, loader: ImageLoader, postId: String, actions
             onOpenPost = actions.onOpenPost,
             onOpenUser = actions.onOpenUser,
             mediaHttpClient = actions.mediaHttpClient,
+            onOpenMention = actions.onOpenMention,
         )
     }
 

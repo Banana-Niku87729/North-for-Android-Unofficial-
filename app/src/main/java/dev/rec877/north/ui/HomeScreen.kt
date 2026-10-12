@@ -61,6 +61,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -159,6 +160,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             onOpenPost = { vm.openPost(it.id) },
             onOpenUser = { vm.openUser(it.handle) },
             mediaHttpClient = vm.imageClient,
+            onOpenMention = vm::openUser,
         )
     }
 
@@ -229,6 +231,12 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
                     }
                 }
             }
+            // 配置編集中は背面を完全に受け止める。下部ナビと専用HUDだけは後から描画されるため切替可能。
+            if (vm.composeButtonCustomizationMode) {
+                Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                    detectDragGestures { change, _ -> change.consume() }
+                })
+            }
         }
 
         if (!imeOpen) {
@@ -243,9 +251,41 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
     // どのタブ・プロフィール画面からも投稿できる、モバイルWeb版相当の投稿ボタン。
     if (!imeOpen && top != dev.rec877.north.Dest.SETTINGS) {
         // 下部ナビの通知アイコンと重ならないよう、FABはナビの上に十分な余白を取る。
-        Box(Modifier.fillMaxSize().padding(end = 18.dp, bottom = 132.dp), contentAlignment = Alignment.BottomEnd) {
-            Box(Modifier.size(54.dp).clip(CircleShape).background(c.accent).clickable { composerOpen = true }, contentAlignment = Alignment.Center) {
+        val fabPosition = if (vm.composeButtonOnLeft) {
+            Modifier.fillMaxSize().padding(start = 18.dp, bottom = vm.composeButtonBottomOffset.dp)
+        } else {
+            Modifier.fillMaxSize().padding(end = 18.dp, bottom = vm.composeButtonBottomOffset.dp)
+        }
+        Box(fabPosition, contentAlignment = if (vm.composeButtonOnLeft) Alignment.BottomStart else Alignment.BottomEnd) {
+            val density = LocalDensity.current
+            Box(
+                Modifier.size(54.dp)
+                    .offset(vm.composeButtonDragX.dp, vm.composeButtonDragY.dp)
+                    .clip(CircleShape).background(c.accent)
+                    .pointerInput(vm.composeButtonCustomizationMode) {
+                        if (vm.composeButtonCustomizationMode) detectDragGestures { change, drag ->
+                            change.consume()
+                            vm.moveComposeButtonBy(drag.x / density.density, drag.y / density.density)
+                        }
+                    }
+                    .clickable(enabled = !vm.composeButtonCustomizationMode) { composerOpen = true },
+                contentAlignment = Alignment.Center,
+            ) {
                 NorthIcon(NIcons.Edit, c.textOnAccent, 24.dp, modifier = Modifier.size(24.dp))
+            }
+        }
+    }
+    if (vm.composeButtonCustomizationMode) {
+        Box(Modifier.fillMaxWidth().padding(top = 12.dp, start = 16.dp, end = 16.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(16.dp)).background(c.elev1).padding(12.dp)) {
+            Column {
+                Text("投稿ボタンの位置を編集中", color = c.text, fontWeight = FontWeight.ExtraBold)
+                Text("ボタンをドラッグできます。下のタブ、または下の切替で画面を確認できます。", color = c.textMuted, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("TL", color = c.accent, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { vm.popToRoot(); tab = 0 })
+                    Text("検索", color = c.accent, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { vm.popToRoot(); tab = 1 })
+                    Text("プロフィール", color = c.accent, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { vm.ui.me?.let { vm.openUser(it.handle) } })
+                    Text("完了", color = c.danger, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { vm.setComposeButtonEditing(false) })
+                }
             }
         }
     }
@@ -264,6 +304,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             onOpenDrafts = vm::loadDrafts,
             onSaveDraft = { text, images, savedMediaIds, done -> vm.saveDraft(text, images, savedMediaIds, done) },
             onSubmit = { text, images, savedMediaIds, poll, done -> vm.post(text, images, poll = poll, existingMediaIds = savedMediaIds) { done(); composerOpen = false } },
+            onReportIssue = vm::reportAppIssue,
         )
     }
 
@@ -443,6 +484,7 @@ private fun HomeContent(
                         drafts = vm.drafts,
                         draftsLoading = vm.draftsLoading,
                         onOpenDrafts = vm::loadDrafts,
+                        onReportIssue = vm::reportAppIssue,
                     )
                 }
 

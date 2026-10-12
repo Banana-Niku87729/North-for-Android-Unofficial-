@@ -1,5 +1,7 @@
 package dev.rec877.north.ui
 
+import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -34,6 +37,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -63,6 +71,8 @@ class PostActions(
     val onOpenPost: (Post) -> Unit,
     val onOpenUser: (User) -> Unit,
     val mediaHttpClient: OkHttpClient,
+    /** 本文中の @handle 用。User DTOを取得し直さずプロフィール画面を開ける。 */
+    val onOpenMention: (String) -> Unit = {},
 )
 
 @Composable
@@ -101,6 +111,7 @@ fun Avatar(user: User, size: Dp, loader: ImageLoader, modifier: Modifier = Modif
 @Composable
 fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
     val c = North.colors
+    val context = LocalContext.current
     val shown = post.retweetOf ?: post
     var shareOpen by remember { mutableStateOf(false) }
     var folderPickerOpen by remember { mutableStateOf(false) }
@@ -173,7 +184,15 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
                         Text("@${shown.inReplyToHandle} に返信", color = c.textMuted, fontSize = 13.sp)
                     }
                     if (shown.text.isNotEmpty()) {
-                        Text(shown.text, color = c.text, fontSize = 16.sp, lineHeight = 22.sp)
+                        RichPostText(
+                            text = shown.text,
+                            onOpenMention = actions.onOpenMention,
+                            onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
+                        )
+                        LinkCards(
+                            text = shown.text,
+                            onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
+                        )
                     }
                     if (shown.media.isNotEmpty()) {
                         MediaGrid(
@@ -234,6 +253,65 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
             onDismiss = { folderPickerOpen = false },
             onPick = { folder -> actions.onAddToBookmarkFolder(shown, folder); folderPickerOpen = false; shareOpen = false },
         )
+    }
+}
+
+private const val MENTION_TAG = "mention"
+private const val URL_TAG = "url"
+private val interactiveTextPattern = Regex("""https?://[^\s]+|@[A-Za-z0-9_]+""")
+private val urlPattern = Regex("""https?://[^\s]+""")
+
+/** URLとメンションだけを装飾し、ポスト詳細ではなく各対象を直接開ける本文表示。 */
+@Composable
+private fun RichPostText(text: String, onOpenMention: (String) -> Unit, onOpenUrl: (String) -> Unit) {
+    val c = North.colors
+    val annotated = remember(text, c.accent) {
+        buildAnnotatedString {
+            var cursor = 0
+            interactiveTextPattern.findAll(text).forEach { match ->
+                append(text.substring(cursor, match.range.first))
+                val raw = match.value
+                val isUrl = raw.startsWith("http://") || raw.startsWith("https://")
+                // 文末の句読点はURLに含めない。表示上は元の本文を欠かさず残す。
+                val target = if (isUrl) raw.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') else raw
+                val start = length
+                withStyle(SpanStyle(color = c.accent)) { append(target) }
+                addStringAnnotation(if (isUrl) URL_TAG else MENTION_TAG, target, start, length)
+                append(raw.removePrefix(target))
+                cursor = match.range.last + 1
+            }
+            append(text.substring(cursor))
+        }
+    }
+    ClickableText(
+        text = annotated,
+        style = TextStyle(color = c.text, fontSize = 16.sp, lineHeight = 22.sp),
+        onClick = { offset ->
+            annotated.getStringAnnotations(start = offset, end = offset).firstOrNull()?.let { annotation ->
+                if (annotation.tag == MENTION_TAG) onOpenMention(annotation.item.removePrefix("@"))
+                else if (annotation.tag == URL_TAG) onOpenUrl(annotation.item)
+            }
+        },
+    )
+}
+
+/** APIにOGP情報がない場合の安全なフォールバック。外部サイトへ本文を送らず、URLだけをカード化する。 */
+@Composable
+private fun LinkCards(text: String, onOpenUrl: (String) -> Unit) {
+    val c = North.colors
+    val urls = remember(text) {
+        urlPattern.findAll(text).map { it.value.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') }
+            .filter { it.isNotBlank() }.distinct().take(2).toList()
+    }
+    urls.forEach { url ->
+        val host = remember(url) { Uri.parse(url).host ?: url }
+        Column(
+            Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp))
+                .border(1.dp, c.border, RoundedCornerShape(12.dp)).clickable { onOpenUrl(url) }.padding(12.dp),
+        ) {
+            Text(host, color = c.text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(url, color = c.textMuted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+        }
     }
 }
 

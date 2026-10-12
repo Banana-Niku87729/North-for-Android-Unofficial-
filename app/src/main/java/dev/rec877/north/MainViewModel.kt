@@ -137,6 +137,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var highContrast by mutableStateOf(prefs.getBoolean(K_HIGH_CONTRAST, false))
         private set
+    /** 端末のナビゲーション領域との重なりを避けるための、投稿FABのローカル配置設定。 */
+    var composeButtonOnLeft by mutableStateOf(prefs.getBoolean(K_COMPOSE_ON_LEFT, false))
+        private set
+    var composeButtonBottomOffset by mutableStateOf(prefs.getFloat(K_COMPOSE_BOTTOM_OFFSET, 132f))
+        private set
+    var composeButtonDragX by mutableStateOf(prefs.getFloat(K_COMPOSE_DRAG_X, 0f))
+        private set
+    var composeButtonDragY by mutableStateOf(prefs.getFloat(K_COMPOSE_DRAG_Y, 0f))
+        private set
+    var composeButtonCustomizationMode by mutableStateOf(false)
+        private set
     var availableUpdate by mutableStateOf<AppUpdate?>(null)
         private set
     var releaseUpdates by mutableStateOf<List<AppUpdate>>(emptyList())
@@ -555,6 +566,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean(K_HIGH_CONTRAST, value).apply()
     }
 
+    fun updateComposeButtonSide(onLeft: Boolean) {
+        composeButtonOnLeft = onLeft
+        prefs.edit().putBoolean(K_COMPOSE_ON_LEFT, onLeft).apply()
+    }
+
+    fun updateComposeButtonBottomOffset(value: Float) {
+        composeButtonBottomOffset = value.coerceIn(80f, 240f)
+        prefs.edit().putFloat(K_COMPOSE_BOTTOM_OFFSET, composeButtonBottomOffset).apply()
+    }
+
+    fun moveComposeButtonBy(deltaX: Float, deltaY: Float) {
+        composeButtonDragX = (composeButtonDragX + deltaX).coerceIn(-420f, 420f)
+        composeButtonDragY = (composeButtonDragY + deltaY).coerceIn(-520f, 120f)
+        prefs.edit().putFloat(K_COMPOSE_DRAG_X, composeButtonDragX).putFloat(K_COMPOSE_DRAG_Y, composeButtonDragY).apply()
+    }
+
+    fun setComposeButtonEditing(enabled: Boolean) { composeButtonCustomizationMode = enabled }
+
     /** 参考設定のうちサーバーAPIを必要としない、端末内の表示・通知設定。 */
     fun setting(key: String, default: Boolean = false): Boolean = prefs.getBoolean("setting_$key", default)
     fun updateSetting(key: String, value: Boolean) { prefs.edit().putBoolean("setting_$key", value).apply() }
@@ -672,6 +701,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** #おうどんに伝えたい を、SNSへ公開せずアプリ開発者へ届ける。WebhookはWorker内だけに置く。 */
+    fun reportAppIssue(text: String) {
+        if (BuildConfig.BUG_REPORT_ENDPOINT.isBlank()) {
+            ui = ui.copy(message = "不具合報告の送信先が未設定です。アプリの設定を確認してください。")
+            return
+        }
+        val me = ui.me
+        launchSafely {
+            BugReportClient.send(
+                http = http,
+                endpoint = BuildConfig.BUG_REPORT_ENDPOINT,
+                text = text.trim(),
+                accountId = me?.id,
+                handle = me?.handle,
+            )
+            ui = ui.copy(message = "アプリ開発者へ不具合報告を送りました。投稿は公開していません。")
+        }
+    }
+
     fun toggleLike(p: Post) {
         val on = !p.liked
         val delta = if (on) 1 else -1
@@ -771,6 +819,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val K_FONT_SCALE = "font_scale"
         const val K_REDUCE_MOTION = "reduce_motion"
         const val K_HIGH_CONTRAST = "high_contrast"
+        const val K_COMPOSE_ON_LEFT = "compose_on_left"
+        const val K_COMPOSE_BOTTOM_OFFSET = "compose_bottom_offset"
+        const val K_COMPOSE_DRAG_X = "compose_drag_x"
+        const val K_COMPOSE_DRAG_Y = "compose_drag_y"
         const val DEFAULT_ACCENT = 0xFFFFD400L
         const val MAX_HISTORY = 10
     }
