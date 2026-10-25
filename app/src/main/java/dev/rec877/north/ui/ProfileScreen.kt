@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package dev.rec877.north.ui
 
 import android.net.Uri
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,6 +63,7 @@ import dev.rec877.north.PostPage
 import dev.rec877.north.ScreenController
 import dev.rec877.north.User
 import dev.rec877.north.patched
+import dev.rec877.north.withoutDeleted
 import dev.rec877.north.ui.theme.North
 
 /** ページ送りのあるポスト一覧（プロフィールの「ポスト」「いいね」タブ用） */
@@ -95,6 +99,7 @@ class PagedPosts(private val fetch: suspend (String?) -> PostPage) {
     }
 
     fun patch(id: String, f: (Post) -> Post) { items = items.map { it.patched(id, f) } }
+    fun remove(id: String) { items = items.mapNotNull { it.withoutDeleted(id) } }
 }
 
 /** プロフィール画面の状態。戻ってきたとき、読み込み済みの中身とスクロール位置が残る */
@@ -102,6 +107,8 @@ class ProfileController(private val vm: MainViewModel, val handle: String) : Scr
     var user by mutableStateOf<User?>(null); private set
     var failed by mutableStateOf(false); private set
     var tab by mutableIntStateOf(0); private set
+    var refreshing by mutableStateOf(false); private set
+    var postNotificationsEnabled by mutableStateOf(vm.isAccountNotificationEnabled(handle)); private set
 
     val posts = PagedPosts { vm.api.userPosts(handle, it) }
     val likes = PagedPosts { vm.api.userLikes(handle, it) }
@@ -119,6 +126,18 @@ class ProfileController(private val vm: MainViewModel, val handle: String) : Scr
         vm.launchSafely(onError = { failed = true }) {
             failed = false
             user = vm.api.user(handle).also { vm.rememberUsers(listOf(it)) }
+        }
+    }
+
+    /** プロフィール情報と、画面で選ばれている一覧を一度に取り直す。 */
+    fun refresh() {
+        if (refreshing) return
+        refreshing = true
+        vm.launchSafely(onError = { refreshing = false }) {
+            failed = false
+            user = vm.api.user(handle).also { vm.rememberUsers(listOf(it)) }
+            if (tab == 0) posts.first() else likes.first()
+            refreshing = false
         }
     }
 
@@ -140,9 +159,29 @@ class ProfileController(private val vm: MainViewModel, val handle: String) : Scr
         }
     }
 
+    fun togglePostNotifications() {
+        val before = postNotificationsEnabled
+        val enabled = !before
+        postNotificationsEnabled = enabled
+        vm.setAccountNotifications(handle, enabled) { postNotificationsEnabled = before }
+    }
+
     override fun patch(id: String, f: (Post) -> Post) {
         posts.patch(id, f)
         likes.patch(id, f)
+        user = user?.let { current ->
+            current.pinnedTweet?.let { current.copy(pinnedTweet = it.patched(id, f)) } ?: current
+        }
+    }
+
+    override fun removePost(id: String) {
+        posts.remove(id)
+        likes.remove(id)
+        user = user?.let { current -> if (current.pinnedTweet?.id == id) current.copy(pinnedTweet = null) else current }
+    }
+
+    override fun onPinnedPostChanged(ownerId: String, post: Post?) {
+        user = user?.let { current -> if (current.id == ownerId) current.copy(pinnedTweet = post) else current }
     }
 
     override fun onReplyPosted() {}
@@ -177,6 +216,8 @@ fun ProfileScreen(
             }
         } else {
             val list = if (ctl.tab == 0) ctl.posts else ctl.likes
+            val pinnedPost = if (ctl.tab == 0) user.pinnedTweet else null
+            val visiblePosts = list.items.filterNot { it.id == pinnedPost?.id }
             val isSelf = vm.ui.me?.id == user.id || vm.ui.me?.handle.equals(user.handle, ignoreCase = true)
             val compactHeader by remember(ctl.listState) {
                 derivedStateOf { ctl.listState.firstVisibleItemIndex > 0 || ctl.listState.firstVisibleItemScrollOffset > 180 }
@@ -186,38 +227,50 @@ fun ProfileScreen(
                 if (isSelf) vm.ui.me?.let(ctl::syncSelf)
             }
 
-            LazyColumn(Modifier.fillMaxSize(), state = ctl.listState) {
-                item(key = "header") {
-                    ProfileHeader(
-                        user, isSelf, loader,
-                        onFollow = { ctl.toggleFollow() },
-                        onOpenFollows = { kind -> vm.open(Dest.follows(user.handle, kind)) },
-                        onOpenMedia = { media -> actions.onOpenMedia(listOf(media), 0) },
-                        onEdit = { editing = true },
-                    )
-                }
-                item(key = "tabs") { NorthTabs(listOf("ポスト", "いいね"), ctl.tab) { ctl.selectTab(it) } }
-
-                items(list.items, key = { "${ctl.tab}:${it.id}" }) { PostCard(it, loader, actions) }
-
-                if (list.cursor != null) {
-                    item(key = "more") {
-                        // 末尾が見えたら続きを読む
-                        LaunchedEffect(list.cursor, ctl.tab) { vm.launchSafely { list.more() } }
-                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
-                        }
-                    }
-                } else if (list.loaded && list.items.isEmpty()) {
-                    item(key = "empty") {
-                        Text(
-                            if (user.isProtected && !isSelf && !user.following) "このアカウントのポストは非公開です"
-                            else if (ctl.tab == 0) "ポストはまだありません" else "いいねはまだありません",
-                            color = c.textMuted,
-                            fontSize = 15.sp,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.fillMaxWidth().padding(32.dp),
+            PullToRefreshBox(
+                isRefreshing = ctl.refreshing,
+                onRefresh = ctl::refresh,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                LazyColumn(Modifier.fillMaxSize(), state = ctl.listState) {
+                    item(key = "header") {
+                        ProfileHeader(
+                            user, isSelf, loader,
+                            onFollow = { ctl.toggleFollow() },
+                            postNotificationsEnabled = ctl.postNotificationsEnabled,
+                            onTogglePostNotifications = { ctl.togglePostNotifications() },
+                            onOpenFollows = { kind -> vm.open(Dest.follows(user.handle, kind)) },
+                            onOpenMedia = { media -> actions.onOpenMedia(listOf(media), 0) },
+                            onEdit = { editing = true },
                         )
+                    }
+                    item(key = "tabs") { NorthTabs(listOf("ポスト", "いいね"), ctl.tab) { ctl.selectTab(it) } }
+
+                    pinnedPost?.let { pinned ->
+                        item(key = "pinned:${pinned.id}") { PostCard(pinned, loader, actions, pinned = true) }
+                    }
+
+                    items(visiblePosts, key = { "${ctl.tab}:${it.id}" }) { PostCard(it, loader, actions) }
+
+                    if (list.cursor != null) {
+                        item(key = "more") {
+                            // 末尾が見えたら続きを読む
+                            LaunchedEffect(list.cursor, ctl.tab) { vm.launchSafely { list.more() } }
+                            Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+                            }
+                        }
+                    } else if (list.loaded && visiblePosts.isEmpty() && pinnedPost == null) {
+                        item(key = "empty") {
+                            Text(
+                                if (user.isProtected && !isSelf && !user.following) "このアカウントのポストは非公開です"
+                                else if (ctl.tab == 0) "ポストはまだありません" else "いいねはまだありません",
+                                color = c.textMuted,
+                                fontSize = 15.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(32.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -251,6 +304,8 @@ private fun ProfileHeader(
     isSelf: Boolean,
     loader: ImageLoader,
     onFollow: () -> Unit,
+    postNotificationsEnabled: Boolean,
+    onTogglePostNotifications: () -> Unit,
     onOpenFollows: (String) -> Unit,
     onOpenMedia: (Media) -> Unit,
     onEdit: () -> Unit,
@@ -296,25 +351,59 @@ private fun ProfileHeader(
                 ) { Text("プロフィールを編集", color = c.text, fontSize = 14.sp, fontWeight = FontWeight.Bold) }
             } else {
                 val following = user.following
-                Box(
-                    Modifier
-                        .align(Alignment.CenterEnd)
-                        .height(34.dp)
-                        .clip(CircleShape)
-                        .then(
-                            if (following) Modifier.border(1.dp, c.borderStrong, CircleShape)
-                            else Modifier.background(c.post)
-                        )
-                        .clickable(onClick = onFollow)
-                        .padding(horizontal = 16.dp),
-                    contentAlignment = Alignment.Center,
+                Row(
+                    Modifier.align(Alignment.CenterEnd),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        if (following) "フォロー中" else "フォローする",
-                        color = if (following) c.text else c.textOnPost,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
+                    if (following) {
+                        Box(
+                            Modifier
+                                .height(34.dp)
+                                .clip(CircleShape)
+                                .border(1.dp, if (postNotificationsEnabled) c.accent else c.borderStrong, CircleShape)
+                                .clickable(onClick = onTogglePostNotifications)
+                                .padding(horizontal = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            ) {
+                                NorthIcon(
+                                    NIcons.Bell,
+                                    if (postNotificationsEnabled) c.accent else c.text,
+                                    16.dp,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                Text(
+                                    if (postNotificationsEnabled) "新着通知オン" else "新着を受け取る",
+                                    color = if (postNotificationsEnabled) c.accent else c.text,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        }
+                    }
+                    Box(
+                        Modifier
+                            .height(34.dp)
+                            .clip(CircleShape)
+                            .then(
+                                if (following) Modifier.border(1.dp, c.borderStrong, CircleShape)
+                                else Modifier.background(c.post)
+                            )
+                            .clickable(onClick = onFollow)
+                            .padding(horizontal = 16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (following) "フォロー中" else "フォローする",
+                            color = if (following) c.text else c.textOnPost,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
                 }
             }
         }
@@ -384,6 +473,7 @@ private fun ProfileHeader(
             }
         }
     }
+
 }
 
 @Composable
@@ -395,7 +485,10 @@ private fun CompactProfileBar(user: User, onSearchPosts: (String) -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(user.name, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(user.name, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                UserBadges(user)
+            }
             Text("${user.tweetCount} 件のポスト", color = c.textMuted, fontSize = 12.sp)
         }
         Box(Modifier.size(40.dp).clip(CircleShape).clickable { onSearchPosts("from:${user.handle}") }, contentAlignment = Alignment.Center) {

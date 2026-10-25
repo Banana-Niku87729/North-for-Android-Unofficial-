@@ -16,6 +16,7 @@ import dev.rec877.north.ui.theme.NorthTheme
 
 class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
+    private var installPermissionScreenOpened = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,6 +47,8 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // ダウンロード完了通知など、新しいIntentなら権限案内を再試行できる。
+        installPermissionScreenOpened = false
         handleRedirect(intent)
         handleOpen(intent)
     }
@@ -65,12 +68,18 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // 完了通知をタップして戻ったら、保存済みAPKをインストーラーへ渡す。
         // 未許可の場合はここから「このアプリからのインストール」設定を開く。
-        UpdateInstaller.openPendingInstaller(this)
+        when (UpdateInstaller.openPendingInstaller(this, requestPermission = !installPermissionScreenOpened)) {
+            UpdateInstaller.Action.PERMISSION_REQUESTED -> installPermissionScreenOpened = true
+            UpdateInstaller.Action.INSTALLER_OPENED -> installPermissionScreenOpened = false
+            UpdateInstaller.Action.NONE -> Unit
+        }
     }
 
     private fun handleRedirect(i: Intent?) {
         val uri = i?.data ?: return
-        if (uri.scheme == Config.APP_SCHEME) vm.onRedirect(uri)
+        if (uri.scheme.equals(Config.APP_SCHEME, ignoreCase = true) &&
+            uri.host.equals("oauth", ignoreCase = true)
+        ) vm.onRedirect(uri)
     }
 
     /** スマホの通知をタップして開かれたとき: 該当のポスト/プロフィールを開く */

@@ -14,6 +14,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 @Serializable data class Tokens(val accessToken: String, val refreshToken: String, val expiresAtMs: Long)
+data class AuthToken(val value: String, internal val slotKey: String)
 /** 端末に追加済みのアカウント。トークン本体は別の暗号化領域に保存する。 */
 @Serializable data class SavedAccount(
     val id: String,
@@ -41,6 +42,14 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
      */
     private val mutex = Mutex()
 
+    /** API開始後にアカウントが切り替わっても、更新トークンの保存先を固定する。 */
+    private sealed interface TokenSlot {
+        val key: String
+        data object Pending : TokenSlot { override val key = K_PENDING_TOKENS }
+        data class Account(val id: String) : TokenSlot { override val key = tokenKey(id) }
+        data object Legacy : TokenSlot { override val key = K_TOKENS }
+    }
+
     fun isLoggedIn(): Boolean = loadTokens() != null
 
     fun accounts(): List<SavedAccount> =
@@ -64,7 +73,9 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
             .appendQueryParameter("client_id", Config.CLIENT_ID)
             .appendQueryParameter("response_type", "code")
             .appendQueryParameter("redirect_uri", Config.REDIRECT_URI)
-            .appendQueryParameter("scope", Config.SCOPES)
+            .appendQueryParameter("scope", (Config.SCOPES.split(" ") + listOf(
+                "dm.read", "dm.write", "dm.receipts.write", "dm.requests.write",
+            )).filter { it.isNotBlank() }.distinct().joinToString(" "))
             .appendQueryParameter("state", state)
             .appendQueryParameter("code_challenge", Pkce.challenge(verifier))
             .appendQueryParameter("code_challenge_method", "S256")
@@ -73,12 +84,16 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
 
     // ---------- リダイレクト受け取り（認可codeは60秒・1回限り。すぐ交換する）----------
     suspend fun handleRedirect(uri: Uri) {
+        if (!uri.scheme.equals(Config.APP_SCHEME, ignoreCase = true) ||
+            !uri.host.equals(OAUTH_CALLBACK_HOST, ignoreCase = true)
+        ) throw AuthException("不正なログイン応答です")
+
         val pending = secrets.get(K_PENDING)?.let { json.decodeFromString<Pending>(it) }
             ?: throw AuthException("ログイン要求が見つかりません。もう一度お試しください")
-        secrets.remove(K_PENDING)
-
-        uri.getQueryParameter("error")?.let { throw AuthException("認可が拒否されました: $it") }
         if (uri.getQueryParameter("state") != pending.state) throw AuthException("stateが一致しません")
+        // state確認前に消すと、偽ディープリンクだけで正規ログインを妨害できてしまう。
+        secrets.remove(K_PENDING)
+        uri.getQueryParameter("error")?.let { throw AuthException("認可が拒否されました: $it") }
         val code = uri.getQueryParameter("code") ?: throw AuthException("codeがありません")
 
         val (status, text) = postForm(
@@ -136,15 +151,21 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
     }
 
     // ---------- アクセストークン取得（期限が近ければ更新）----------
-    suspend fun accessToken(): String = mutex.withLock {
-        val t = loadTokens() ?: throw NotLoggedInException()
-        if (System.currentTimeMillis() < t.expiresAtMs - 60_000) t.accessToken else refreshLocked(t).accessToken
+    suspend fun authToken(): AuthToken = mutex.withLock {
+        val slot = currentTokenSlot() ?: throw NotLoggedInException()
+        val t = loadTokens(slot) ?: throw NotLoggedInException()
+        val fresh = if (System.currentTimeMillis() < t.expiresAtMs - 60_000) t else refreshLocked(t, slot)
+        AuthToken(fresh.accessToken, slot.key)
     }
 
+    suspend fun accessToken(): String = authToken().value
+
     /** 401が返った時用。他の呼び出しが既に更新済みなら、更新せずその値を返す */
-    suspend fun refreshAfter(failedAccessToken: String): String = mutex.withLock {
-        val t = loadTokens() ?: throw NotLoggedInException()
-        if (t.accessToken != failedAccessToken) t.accessToken else refreshLocked(t).accessToken
+    suspend fun refreshAfter(failed: AuthToken): AuthToken = mutex.withLock {
+        val slot = slotFromKey(failed.slotKey)
+        val t = loadTokens(slot) ?: throw AuthException("リクエスト中のアカウントが切り替えられました。もう一度お試しください")
+        val fresh = if (t.accessToken != failed.value) t else refreshLocked(t, slot)
+        AuthToken(fresh.accessToken, slot.key)
     }
 
     suspend fun logout() {
@@ -164,7 +185,7 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
     }
 
     // ---------- 内部 ----------
-    private suspend fun refreshLocked(t: Tokens): Tokens {
+    private suspend fun refreshLocked(t: Tokens, slot: TokenSlot): Tokens {
         val (status, text) = postForm(
             "/oauth/token",
             mapOf(
@@ -174,12 +195,15 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
             )
         )
         if (status == 400 && text.contains("invalid_grant")) {
-            removeCurrentTokens() // 期限切れ・取り消し済み → 再ログインが必要
+            removeTokens(slot) // 期限切れ・取り消し済み → 再ログインが必要
+            if (loadTokens() != null) {
+                throw AuthException("このアカウントのログイン期限が切れました。必要なら再度追加してください")
+            }
             throw NotLoggedInException()
         }
         // ネットワーク例外はそのまま投げる（トークンは消さない）
         val fresh = parseTokens(status, text)
-        saveTokens(fresh)
+        saveTokens(slot, fresh)
         return fresh
     }
 
@@ -192,34 +216,43 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
         return Tokens(r.accessToken, r.refreshToken, System.currentTimeMillis() + r.expiresIn * 1000L)
     }
 
-    private fun loadTokens(): Tokens? {
-        val raw = secrets.get(K_PENDING_TOKENS)
-            ?: activeAccountId()?.let { secrets.get(tokenKey(it)) }
-            ?: secrets.get(K_TOKENS)
+    private fun currentTokenSlot(): TokenSlot? {
+        if (secrets.get(K_PENDING_TOKENS) != null) return TokenSlot.Pending
+        val active = activeAccountId()
+        if (active != null) return TokenSlot.Account(active)
+        return if (secrets.get(K_TOKENS) != null) TokenSlot.Legacy else null
+    }
+
+    private fun slotFromKey(key: String): TokenSlot = when {
+        key == K_PENDING_TOKENS -> TokenSlot.Pending
+        key == K_TOKENS -> TokenSlot.Legacy
+        key.startsWith(TOKEN_PREFIX) -> TokenSlot.Account(key.removePrefix(TOKEN_PREFIX))
+        else -> throw NotLoggedInException()
+    }
+
+    private fun loadTokens(): Tokens? = currentTokenSlot()?.let(::loadTokens)
+
+    private fun loadTokens(slot: TokenSlot): Tokens? {
+        val raw = secrets.get(slot.key)
         return raw?.let { runCatching { json.decodeFromString<Tokens>(it) }.getOrNull() }
     }
 
     private fun loadPendingTokens(): Tokens? = secrets.get(K_PENDING_TOKENS)
         ?.let { runCatching { json.decodeFromString<Tokens>(it) }.getOrNull() }
 
-    private fun saveTokens(t: Tokens) {
-        val active = activeAccountId()
-        if (secrets.get(K_PENDING_TOKENS) != null) {
-            secrets.put(K_PENDING_TOKENS, json.encodeToString(t))
-        } else if (active != null) {
-            saveTokensFor(active, t)
-        } else {
-            secrets.put(K_TOKENS, json.encodeToString(t))
-        }
+    private fun saveTokens(slot: TokenSlot, t: Tokens) {
+        // 更新中に端末から削除されたアカウントの資格情報を復活させない。
+        if (slot is TokenSlot.Account && accounts().none { it.id == slot.id }) return
+        secrets.put(slot.key, json.encodeToString(t))
     }
 
     private fun saveTokensFor(id: String, t: Tokens) = secrets.put(tokenKey(id), json.encodeToString(t))
 
-    private fun removeCurrentTokens() {
-        when {
-            secrets.get(K_PENDING_TOKENS) != null -> secrets.remove(K_PENDING_TOKENS)
-            activeAccountId() != null -> removeAccount(activeAccountId()!!)
-            else -> secrets.remove(K_TOKENS)
+    private fun removeTokens(slot: TokenSlot) {
+        when (slot) {
+            TokenSlot.Pending -> secrets.remove(K_PENDING_TOKENS)
+            is TokenSlot.Account -> removeAccount(slot.id)
+            TokenSlot.Legacy -> secrets.remove(K_TOKENS)
         }
     }
 
@@ -236,6 +269,8 @@ class AuthRepository(private val secrets: SecretStore, private val http: OkHttpC
         const val K_PENDING_TOKENS = "pending_account_tokens"
         const val K_ACCOUNTS = "saved_accounts"
         const val K_ACTIVE_ACCOUNT = "active_account"
-        fun tokenKey(id: String) = "tokens:$id"
+        const val TOKEN_PREFIX = "tokens:"
+        const val OAUTH_CALLBACK_HOST = "oauth"
+        fun tokenKey(id: String) = TOKEN_PREFIX + id
     }
 }

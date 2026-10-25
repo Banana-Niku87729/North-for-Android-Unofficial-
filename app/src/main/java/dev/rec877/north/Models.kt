@@ -26,6 +26,8 @@ data class User(
     val followedBy: Boolean = false,
     val blocking: Boolean = false,
     val muting: Boolean = false,
+    /** プロフィール先頭に固定されているポスト。ユーザー詳細でのみ返る。 */
+    val pinnedTweet: Post? = null,
 )
 
 @Serializable
@@ -40,6 +42,7 @@ data class Media(
     val altText: String? = null,
     val sensitive: Boolean = false,
     val status: String? = null,
+    val errorMessage: String? = null,
     val durationMs: Long? = null,
     val warning: String? = null,
 )
@@ -68,6 +71,10 @@ data class Post(
     val liked: Boolean = false,
     val retweeted: Boolean = false,
     val bookmarked: Boolean = false,
+    /** 自分の固定ポストか。ポスト単体・一覧の「…」メニュー判定に使う。 */
+    val pinned: Boolean = false,
+    /** EVERYONE / FOLLOWING / MENTIONED */
+    val replyPolicy: String = "EVERYONE",
     val unavailable: Boolean = false,
     val quotedUnavailable: Boolean = false,
     /** muted / blocked */
@@ -97,6 +104,12 @@ fun Post.patched(id: String, f: (Post) -> Post): Post {
     p.retweetOf?.let { if (it.id == id) p = p.copy(retweetOf = f(it)) }
     p.quoted?.let { if (it.id == id) p = p.copy(quoted = f(it)) }
     return p
+}
+
+/** 削除したポストを一覧から除き、引用先だけが削除された場合は引用不可表示へ置き換える。 */
+fun Post.withoutDeleted(id: String): Post? {
+    if (this.id == id || retweetOf?.id == id) return null
+    return if (quoted?.id == id) copy(quoted = null, quotedUnavailable = true) else this
 }
 
 @Serializable data class PostPage(val items: List<Post>, val nextCursor: String? = null)

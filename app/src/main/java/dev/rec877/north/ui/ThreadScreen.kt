@@ -1,5 +1,7 @@
 package dev.rec877.north.ui
 
+import android.net.Uri
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -36,6 +38,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -50,6 +53,7 @@ import dev.rec877.north.MainViewModel
 import dev.rec877.north.Post
 import dev.rec877.north.ScreenController
 import dev.rec877.north.patched
+import dev.rec877.north.withoutDeleted
 import dev.rec877.north.ui.theme.North
 
 /** ポスト詳細の状態。戻ってきたときに読み込み済みの中身・スクロール位置・書きかけの返信が残るよう、ViewModelが保持する */
@@ -112,6 +116,12 @@ class ThreadController(private val vm: MainViewModel, val postId: String) : Scre
         replies = replies.map { it.patched(id, f) }
     }
 
+    override fun removePost(id: String) {
+        ancestors = ancestors.mapNotNull { it.withoutDeleted(id) }
+        main = main?.withoutDeleted(id)
+        replies = replies.mapNotNull { it.withoutDeleted(id) }
+    }
+
     override fun onReplyPosted() {
         if (main != null) load()
     }
@@ -166,6 +176,11 @@ fun ThreadScreen(vm: MainViewModel, loader: ImageLoader, postId: String, actions
             onOpenUser = actions.onOpenUser,
             mediaHttpClient = actions.mediaHttpClient,
             onOpenMention = actions.onOpenMention,
+            currentUserId = actions.currentUserId,
+            onPin = actions.onPin,
+            onUnpin = actions.onUnpin,
+            onSetReplyPolicy = actions.onSetReplyPolicy,
+            onDelete = actions.onDelete,
         )
     }
 
@@ -347,6 +362,7 @@ private fun ReplyBar(
 @Composable
 private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, actions: PostActions) {
     val c = North.colors
+    val context = LocalContext.current
     val shown = post.retweetOf ?: post
     var shareOpen by remember { mutableStateOf(false) }
     var folderPickerOpen by remember { mutableStateOf(false) }
@@ -358,10 +374,14 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Avatar(shown.author, 48.dp, loader)
-            Column {
-                Text(shown.author.name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(shown.author.name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    UserBadges(shown.author)
+                }
                 Text("@${shown.author.handle}", color = c.textMuted, fontSize = 15.sp, maxLines = 1)
             }
+            PostMoreButton(shown, actions)
         }
 
         if (shown.unavailable) {
@@ -371,12 +391,17 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
                 Text("@${shown.inReplyToHandle} に返信", color = c.textMuted, fontSize = 14.sp, modifier = Modifier.padding(top = 12.dp))
             }
             if (shown.text.isNotEmpty()) {
-                Text(
-                    shown.text,
-                    color = c.text,
+                RichPostText(
+                    text = shown.text,
+                    onOpenMention = actions.onOpenMention,
+                    onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
                     fontSize = 20.sp,
                     lineHeight = 28.sp,
                     modifier = Modifier.padding(top = 12.dp),
+                )
+                LinkCards(
+                    text = shown.text,
+                    onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
                 )
             }
             if (shown.media.isNotEmpty()) {
@@ -384,6 +409,15 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
             }
             shown.poll?.let { PollCard(it) }
             shown.quoted?.let { QuotedPost(it, loader, actions) }
+        }
+
+        if (shown.replyPolicy == "FOLLOWING") {
+            Text(
+                "返信できるアカウントをフォロー中のみに制限しています",
+                color = c.textMuted,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(top = 12.dp),
+            )
         }
 
         val stamp = absoluteTime(shown.createdAt) + (shown.source?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
@@ -435,6 +469,7 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
             ActionButton(NIcons.Share, 0, c.textMuted, active = false) { shareOpen = true }
         }
     }
+
     HorizontalDivider(color = c.border)
     if (shareOpen) ShareMenu(shown, actions.bookmarkFolders(), { shareOpen = false }, { actions.onBookmark(shown); shareOpen = false }, { actions.onLoadBookmarkFolders(); folderPickerOpen = true })
     if (folderPickerOpen) BookmarkFolderPicker(actions.bookmarkFolders(), { folderPickerOpen = false }) { folder -> actions.onAddToBookmarkFolder(shown, folder); folderPickerOpen = false; shareOpen = false }

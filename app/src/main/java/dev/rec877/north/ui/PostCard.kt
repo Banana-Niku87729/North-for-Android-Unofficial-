@@ -1,6 +1,8 @@
 package dev.rec877.north.ui
 
+import android.content.Context
 import android.net.Uri
+import android.widget.Toast
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -44,6 +48,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.ImageLoader
@@ -73,6 +78,11 @@ class PostActions(
     val mediaHttpClient: OkHttpClient,
     /** 本文中の @handle 用。User DTOを取得し直さずプロフィール画面を開ける。 */
     val onOpenMention: (String) -> Unit = {},
+    val currentUserId: () -> String? = { null },
+    val onPin: (Post) -> Unit = {},
+    val onUnpin: (Post) -> Unit = {},
+    val onSetReplyPolicy: (Post, String) -> Unit = { _, _ -> },
+    val onDelete: (Post) -> Unit = {},
 )
 
 @Composable
@@ -109,10 +119,11 @@ fun Avatar(user: User, size: Dp, loader: ImageLoader, modifier: Modifier = Modif
  * 行をタップ → ポスト詳細、アイコン/名前をタップ → プロフィール。
  */
 @Composable
-fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
+fun PostCard(post: Post, loader: ImageLoader, actions: PostActions, pinned: Boolean = false) {
     val c = North.colors
     val context = LocalContext.current
-    val shown = post.retweetOf ?: post
+    val shownBase = post.retweetOf ?: post
+    val shown = if (pinned) shownBase.copy(pinned = true) else shownBase
     var shareOpen by remember { mutableStateOf(false) }
     var folderPickerOpen by remember { mutableStateOf(false) }
 
@@ -127,6 +138,16 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
             Avatar(shown.author, 48.dp, loader, Modifier.clickable { actions.onOpenUser(shown.author) })
 
             Column(Modifier.weight(1f)) {
+                if (pinned) {
+                    Row(
+                        Modifier.padding(bottom = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        NorthIcon(NIcons.Pin, c.textMuted, 14.dp, modifier = Modifier.size(14.dp))
+                        Text("固定されたポスト", color = c.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
                 if (post.retweetOf != null) {
                     Row(
                         Modifier
@@ -137,13 +158,16 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
                     ) {
                         NorthIcon(NIcons.Repost, c.textMuted, 14.dp, modifier = Modifier.size(14.dp))
                         Text(
-                            "${post.author.name}さんがリポストしました",
+                            post.author.name,
                             color = c.textMuted,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
                         )
+                        UserBadges(post.author)
+                        Text("さんがリポストしました", color = c.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
                 }
 
@@ -175,6 +199,7 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
                         fontSize = 15.sp,
                         maxLines = 1,
                     )
+                    PostMoreButton(shown, actions)
                 }
 
                 if (shown.unavailable) {
@@ -188,6 +213,7 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
                             text = shown.text,
                             onOpenMention = actions.onOpenMention,
                             onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
+                            onOpenPost = { actions.onOpenPost(shown) },
                         )
                         LinkCards(
                             text = shown.text,
@@ -256,28 +282,151 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions) {
     }
 }
 
+@Composable
+fun PostMoreButton(post: Post, actions: PostActions) {
+    val c = North.colors
+    val context = LocalContext.current
+    val isMine = actions.currentUserId() == post.author.id
+    var expanded by remember { mutableStateOf(false) }
+    var confirmation by remember { mutableStateOf<String?>(null) }
+
+    Box {
+        Box(
+            Modifier.size(32.dp).clip(CircleShape).clickable(role = Role.Button) { expanded = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            NorthIcon(NIcons.More, c.textMuted, 18.dp, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            containerColor = c.elev1,
+        ) {
+            if (isMine) {
+                DropdownMenuItem(
+                    text = { Text(if (post.pinned) "固定を解除" else "プロフィールに固定", color = c.text) },
+                    onClick = { expanded = false; confirmation = if (post.pinned) "unpin" else "pin" },
+                )
+                val followingOnly = post.replyPolicy == "FOLLOWING"
+                DropdownMenuItem(
+                    text = { Text(if (followingOnly) "返信を全員に開放" else "返信をフォロー中のみに制限", color = c.text) },
+                    onClick = {
+                        expanded = false
+                        actions.onSetReplyPolicy(post, if (followingOnly) "EVERYONE" else "FOLLOWING")
+                    },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("リンクをコピー", color = c.text) },
+                onClick = { expanded = false; copyPostLink(context, post) },
+            )
+            if (isMine) {
+                DropdownMenuItem(
+                    text = { Text("ポストを削除", color = c.danger) },
+                    onClick = { expanded = false; confirmation = "delete" },
+                )
+            }
+        }
+    }
+
+    confirmation?.let { action ->
+        val (title, description, confirmLabel) = when (action) {
+            "pin" -> Triple("ポストを固定しますか？", "このポストをプロフィールの先頭に表示します。", "固定する")
+            "unpin" -> Triple("固定を解除しますか？", "このポストをプロフィールの先頭から外します。", "固定解除")
+            else -> Triple("ポストを削除しますか？", "この操作は取り消せません。", "削除する")
+        }
+        AlertDialog(
+            onDismissRequest = { confirmation = null },
+            containerColor = c.elev1,
+            title = { Text(title, color = c.text, fontWeight = FontWeight.ExtraBold) },
+            text = { Text(description, color = c.textMuted) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmation = null
+                    when (action) {
+                        "pin" -> actions.onPin(post)
+                        "unpin" -> actions.onUnpin(post)
+                        else -> actions.onDelete(post)
+                    }
+                }) { Text(confirmLabel, color = if (action == "delete") c.danger else c.accent, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { confirmation = null }) { Text("キャンセル", color = c.textMuted) } },
+        )
+    }
+}
+
+private fun copyPostLink(context: Context, post: Post) {
+    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+    clipboard.setPrimaryClip(
+        android.content.ClipData.newPlainText("north のポスト", "https://north.rip/${post.author.handle}/status/${post.id}")
+    )
+    Toast.makeText(context, "リンクをコピーしました", Toast.LENGTH_SHORT).show()
+}
+
 private const val MENTION_TAG = "mention"
 private const val URL_TAG = "url"
-private val interactiveTextPattern = Regex("""https?://[^\s]+|@[A-Za-z0-9_]+""")
+private val richTextPattern = Regex("""<色=\"#[0-9A-Fa-f]{6}\">|</色>|<太字>|</太字>|<斜体>|</斜体>|https?://[^\s]+|@[A-Za-z0-9_]+""")
 private val urlPattern = Regex("""https?://[^\s]+""")
 
-/** URLとメンションだけを装飾し、ポスト詳細ではなく各対象を直接開ける本文表示。 */
+/** URLとメンションは各対象を開き、それ以外の本文タップはポスト詳細へ渡す。 */
 @Composable
-private fun RichPostText(text: String, onOpenMention: (String) -> Unit, onOpenUrl: (String) -> Unit) {
+fun RichPostText(
+    text: String,
+    onOpenMention: (String) -> Unit,
+    onOpenUrl: (String) -> Unit,
+    onOpenPost: () -> Unit = {},
+    fontSize: TextUnit = 16.sp,
+    lineHeight: TextUnit = 22.sp,
+    modifier: Modifier = Modifier,
+) {
     val c = North.colors
     val annotated = remember(text, c.accent) {
         buildAnnotatedString {
             var cursor = 0
-            interactiveTextPattern.findAll(text).forEach { match ->
+            val styleTags = mutableListOf<String>()
+            richTextPattern.findAll(text).forEach { match ->
                 append(text.substring(cursor, match.range.first))
                 val raw = match.value
-                val isUrl = raw.startsWith("http://") || raw.startsWith("https://")
-                // 文末の句読点はURLに含めない。表示上は元の本文を欠かさず残す。
-                val target = if (isUrl) raw.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') else raw
-                val start = length
-                withStyle(SpanStyle(color = c.accent)) { append(target) }
-                addStringAnnotation(if (isUrl) URL_TAG else MENTION_TAG, target, start, length)
-                append(raw.removePrefix(target))
+                when {
+                    raw.startsWith("<色=") -> {
+                        val hex = raw.substringAfter('"').substringBefore('"')
+                        val color = hex.removePrefix("#").toLongOrNull(16)?.let { value ->
+                            Color(
+                                red = ((value shr 16) and 0xFF).toFloat() / 255f,
+                                green = ((value shr 8) and 0xFF).toFloat() / 255f,
+                                blue = (value and 0xFF).toFloat() / 255f,
+                            )
+                        }
+                        if (color == null) append(raw) else {
+                            pushStyle(SpanStyle(color = color))
+                            styleTags += "色"
+                        }
+                    }
+                    raw == "<太字>" -> {
+                        pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+                        styleTags += "太字"
+                    }
+                    raw == "<斜体>" -> {
+                        pushStyle(SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic))
+                        styleTags += "斜体"
+                    }
+                    raw == "</色>" || raw == "</太字>" || raw == "</斜体>" -> {
+                        val tag = raw.removePrefix("</").removeSuffix(">")
+                        if (styleTags.lastOrNull() == tag) {
+                            pop()
+                            styleTags.removeAt(styleTags.lastIndex)
+                        } else append(raw)
+                    }
+                    else -> {
+                        val isUrl = raw.startsWith("http://") || raw.startsWith("https://")
+                        // 文末の句読点はURLに含めない。表示上は元の本文を欠かさず残す。
+                        val target = if (isUrl) raw.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') else raw
+                        val start = length
+                        withStyle(SpanStyle(color = c.accent)) { append(target) }
+                        addStringAnnotation(if (isUrl) URL_TAG else MENTION_TAG, target, start, length)
+                        append(raw.removePrefix(target))
+                    }
+                }
                 cursor = match.range.last + 1
             }
             append(text.substring(cursor))
@@ -285,11 +434,14 @@ private fun RichPostText(text: String, onOpenMention: (String) -> Unit, onOpenUr
     }
     ClickableText(
         text = annotated,
-        style = TextStyle(color = c.text, fontSize = 16.sp, lineHeight = 22.sp),
+        style = TextStyle(color = c.text, fontSize = fontSize, lineHeight = lineHeight),
+        modifier = modifier,
         onClick = { offset ->
-            annotated.getStringAnnotations(start = offset, end = offset).firstOrNull()?.let { annotation ->
-                if (annotation.tag == MENTION_TAG) onOpenMention(annotation.item.removePrefix("@"))
-                else if (annotation.tag == URL_TAG) onOpenUrl(annotation.item)
+            val annotation = annotated.getStringAnnotations(start = offset, end = offset).firstOrNull()
+            when (annotation?.tag) {
+                MENTION_TAG -> onOpenMention(annotation.item.removePrefix("@"))
+                URL_TAG -> onOpenUrl(annotation.item)
+                else -> onOpenPost()
             }
         },
     )
@@ -297,7 +449,7 @@ private fun RichPostText(text: String, onOpenMention: (String) -> Unit, onOpenUr
 
 /** APIにOGP情報がない場合の安全なフォールバック。外部サイトへ本文を送らず、URLだけをカード化する。 */
 @Composable
-private fun LinkCards(text: String, onOpenUrl: (String) -> Unit) {
+fun LinkCards(text: String, onOpenUrl: (String) -> Unit) {
     val c = North.colors
     val urls = remember(text) {
         urlPattern.findAll(text).map { it.value.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') }
@@ -326,8 +478,7 @@ fun ShareMenu(post: Post, folders: List<BookmarkFolder>, onDismiss: () -> Unit, 
         text = {
             Column {
                 Text("リンクをコピー", color = c.text, fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth().clickable {
-                    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
-                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("north のポスト", "https://north.rip/${post.author.id}/status/${post.id}"))
+                    copyPostLink(context, post)
                     onDismiss()
                 }.padding(vertical = 14.dp))
                 Text(if (post.bookmarked) "ブックマークから削除" else "ブックマークに追加", color = c.text, fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth().clickable(onClick = onBookmark).padding(vertical = 14.dp))
@@ -377,9 +528,9 @@ fun PollCard(poll: Poll) {
 fun UserBadges(user: User, compact: Boolean = true) {
     val c = North.colors
     if (user.verified) {
-        androidx.compose.foundation.Image(painterResource(R.drawable.ic_verified), null, Modifier.padding(start = 4.dp).size(if (compact) 15.dp else 18.dp), colorFilter = ColorFilter.tint(c.accent))
+        androidx.compose.foundation.Image(painterResource(R.drawable.ic_verified), "認証済み", Modifier.padding(start = 4.dp).size(if (compact) 15.dp else 18.dp), colorFilter = ColorFilter.tint(c.accent))
     }
-    if (user.isProtected) androidx.compose.foundation.Image(painterResource(R.drawable.ic_locked), null, Modifier.padding(start = 3.dp).size(if (compact) 14.dp else 17.dp), colorFilter = ColorFilter.tint(c.text))
+    if (user.isProtected) androidx.compose.foundation.Image(painterResource(R.drawable.ic_locked), "非公開アカウント", Modifier.padding(start = 3.dp).size(if (compact) 14.dp else 17.dp), colorFilter = ColorFilter.tint(c.text))
 }
 
 /** 引用しているポスト: 角丸の枠の中に、投稿者・本文・画像を小さく出す。タップでそのポストへ */
@@ -407,6 +558,7 @@ fun QuotedPost(q: Post, loader: ImageLoader, actions: PostActions) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f, fill = false),
             )
+            UserBadges(q.author)
             Text(
                 "@${q.author.handle} · ${relativeTime(q.createdAt)}",
                 color = c.textMuted,

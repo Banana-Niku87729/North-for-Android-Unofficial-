@@ -50,7 +50,10 @@ object BackgroundNotifications {
     fun disable(ctx: Context) {
         WorkManager.getInstance(ctx).cancelUniqueWork(WORK)
         // 次に有効にしたとき、溜まっていた古い通知が一気に出ないように基準をリセット
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(K_LAST).apply()
+        val prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            prefs.all.keys.filter { it == K_LAST || it.startsWith("$K_LAST:") }.forEach(::remove)
+        }.apply()
     }
 }
 
@@ -58,21 +61,29 @@ class NotificationWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
     override suspend fun doWork(): Result {
         val app = applicationContext as NorthApp
         if (!app.auth.isLoggedIn()) return Result.success()
+        val accountId = app.auth.activeAccountId() ?: return Result.success()
         val prefs = applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val lastKey = "$K_LAST:$accountId"
 
         return try {
             val items = app.api.notifications(null).items
+            // 取得中にアカウントが変わった場合、別アカウントの通知や基準時刻を混ぜない。
+            if (app.auth.activeAccountId() != accountId) return Result.success()
             val newest = items.maxOfOrNull { toMs(it.createdAt) } ?: System.currentTimeMillis()
-            val last = prefs.getLong(K_LAST, -1L)
+            val last = prefs.getLong(lastKey, -1L)
 
             // 初回は「ここから先」の基準を決めるだけで、過去の通知は出さない
             if (last >= 0 && !AppForeground.isForeground) {
                 val fresh = items
                     .filter { !it.read && toMs(it.createdAt) > last }
                     .sortedBy { toMs(it.createdAt) }
-                if (fresh.isNotEmpty()) NotificationHelper.show(applicationContext, fresh)
+                if (fresh.isNotEmpty()) {
+                    // FOLLOWをタップしたときは送信者一人ではなく、自分のフォロワー一覧を開く。
+                    val ownHandle = if (fresh.any { it.kind == "FOLLOW" }) runCatching { app.api.me().handle }.getOrNull() else null
+                    NotificationHelper.show(applicationContext, fresh, ownHandle)
+                }
             }
-            prefs.edit().putLong(K_LAST, if (last < 0) newest else maxOf(last, newest)).apply()
+            prefs.edit().putLong(lastKey, if (last < 0) newest else maxOf(last, newest)).apply()
             Result.success()
         } catch (e: CancellationException) {
             throw e
@@ -97,7 +108,7 @@ object NotificationHelper {
     }
 
     @SuppressLint("MissingPermission") // 権限は下で確認している
-    fun show(ctx: Context, items: List<Notification>) {
+    fun show(ctx: Context, items: List<Notification>, ownHandle: String? = null) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS)
             != PackageManager.PERMISSION_GRANTED
@@ -109,7 +120,8 @@ object NotificationHelper {
             nm.notify(SUMMARY_ID, build(ctx, "north", "新着の通知が${items.size}件あります", null, SUMMARY_ID))
         } else {
             items.forEach { n ->
-                val dest = n.tweet?.id?.let { Dest.post(it) }
+                val dest = if (n.kind == "FOLLOW" && !ownHandle.isNullOrBlank()) Dest.follows(ownHandle, "followers")
+                    else n.tweet?.id?.let { Dest.post(it) }
                     ?: n.actors.firstOrNull()?.handle?.takeIf { it.isNotBlank() }?.let { Dest.user(it) }
                 val code = n.id.hashCode()
                 nm.notify(

@@ -121,8 +121,16 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
         else { vm.popToRoot(); tab = i }
     }
 
-    // 戻るボタン: 重ねている画面があれば1つ閉じる
-    BackHandler(enabled = top != null) { vm.back() }
+    // Android の戻る操作も画面上のナビゲーションと同じ順序で戻す。
+    // ホーム以外のタブをルート扱いにすると、そのままアプリが終了してしまうため、
+    // 検索・通知からはまずホームへ戻す。
+    BackHandler(enabled = vm.composeButtonCustomizationMode || top != null || tab != 0) {
+        when {
+            vm.composeButtonCustomizationMode -> vm.setComposeButtonEditing(false)
+            top != null -> vm.back()
+            else -> tab = 0
+        }
+    }
 
     // スクロール位置はここで持つ（タブを切り替えても戻ってきたとき保たれる）。
     // 検索結果は「語句 + タブ」が変わるたびに新しい状態にして、必ず先頭から表示する。
@@ -161,6 +169,11 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             onOpenUser = { vm.openUser(it.handle) },
             mediaHttpClient = vm.imageClient,
             onOpenMention = vm::openUser,
+            currentUserId = { vm.ui.me?.id },
+            onPin = vm::pinPost,
+            onUnpin = vm::unpinPost,
+            onSetReplyPolicy = vm::setPostReplyPolicy,
+            onDelete = vm::deletePost,
         )
     }
 
@@ -198,7 +211,8 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
                     clearInlineDraftVersion = clearInlineDraftVersion,
                 )
                 1 -> SearchScreen(vm, loader, actions, searchListState)
-                else -> NotificationsScreen(vm, loader, notifListState)
+                2 -> NotificationsScreen(vm, loader, notifListState)
+                3 -> key(vm.activeAccountId()) { DmScreen(vm, loader, visible = top == null) }
             }
 
             if (top != null) {
@@ -249,7 +263,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
     }
 
     // どのタブ・プロフィール画面からも投稿できる、モバイルWeb版相当の投稿ボタン。
-    if (!imeOpen && top != dev.rec877.north.Dest.SETTINGS) {
+    if (!imeOpen && tab != 3 && top != dev.rec877.north.Dest.SETTINGS) {
         // 下部ナビの通知アイコンと重ならないよう、FABはナビの上に十分な余白を取る。
         val fabPosition = if (vm.composeButtonOnLeft) {
             Modifier.fillMaxSize().padding(start = 18.dp, bottom = vm.composeButtonBottomOffset.dp)
@@ -374,6 +388,7 @@ private fun BottomBar(selected: Int, unread: Int, onSelect: (Int) -> Unit) {
                 Triple(NIcons.Home, "ホーム", 0),
                 Triple(NIcons.Search, "検索", 1),
                 Triple(NIcons.Bell, "通知", 2),
+                Triple(NIcons.Message, "DM", 3),
             ).forEach { (icon, label, i) ->
                 Box(
                     Modifier

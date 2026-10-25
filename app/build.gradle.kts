@@ -21,7 +21,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "1.0.1"
 
         buildConfigField("String", "BUG_REPORT_ENDPOINT", "\"$bugReportEndpoint\"")
 
@@ -35,6 +35,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            // パッケージ名の後ろに自動で「.beta」を付与して別アプリ化
+            applicationIdSuffix = ".beta"
+            versionNameSuffix = "-DEBUG"
         }
     }
     compileOptions {

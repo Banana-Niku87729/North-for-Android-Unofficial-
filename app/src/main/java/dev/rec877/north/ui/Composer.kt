@@ -1,9 +1,12 @@
 package dev.rec877.north.ui
 
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -15,7 +18,6 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -38,16 +40,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -58,14 +66,16 @@ import coil3.compose.AsyncImage
 import dev.rec877.north.User
 import dev.rec877.north.PollInput
 import dev.rec877.north.ui.theme.North
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
-private const val MAX_IMAGES = 4
+private const val MAX_MEDIA_ITEMS = 4
 private const val MAX_WEIGHT = 280
 
 /**
- * サイトの .composer を再現。下段に「画像を追加」(アクセント色)と「ポストする」(白ピル)。
- * 画像はAndroidのフォトピッカー（権限不要）で最大4枚。送信時にアップロードしてから投稿する。
+ * サイトの .composer を再現。下段にメディア追加ボタンと「ポストする」(白ピル)。
+ * 画像・動画はAndroidのフォトピッカー（権限不要）で合計最大4件。送信時にアップロードしてから投稿する。
  */
 @Composable
 fun Composer(
@@ -95,9 +105,9 @@ fun Composer(
     }
 
     val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES)
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_MEDIA_ITEMS)
     ) { picked ->
-        val next = (images + picked).distinct().take(MAX_IMAGES)
+        val next = (images + picked).distinct().take(MAX_MEDIA_ITEMS)
         images = next
         onDraftChanged(text, next)
     }
@@ -145,13 +155,7 @@ fun Composer(
                 ) {
                     images.forEach { uri ->
                         Box(Modifier.size(96.dp).clip(RoundedCornerShape(12.dp)).background(c.elev2)) {
-                            AsyncImage(
-                                model = uri,
-                                imageLoader = loader,
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize(),
-                            )
+                            SelectedMediaThumbnail(uri, loader, Modifier.fillMaxSize())
                             Box(
                                 Modifier
                                     .align(Alignment.TopEnd)
@@ -176,7 +180,7 @@ fun Composer(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val canAdd = images.size < MAX_IMAGES && !posting
+                val canAdd = images.size < MAX_MEDIA_ITEMS && !posting
                 Box(
                     Modifier
                         .size(36.dp)
@@ -184,7 +188,7 @@ fun Composer(
                         .alpha(if (canAdd) 1f else 0.4f)
                         .clickable(enabled = canAdd) {
                             picker.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                             )
                         },
                     contentAlignment = Alignment.Center,
@@ -242,7 +246,7 @@ fun Composer(
                 else if (drafts.isEmpty()) Text("保存された下書きはありません", color = c.textMuted)
                 else drafts.take(10).forEach { draft ->
                     val item = draft.items.firstOrNull()
-                    Text(item?.text?.ifBlank { "画像のみの下書き" } ?: "空の下書き", color = c.text, maxLines = 2,
+                    Text(item?.text?.ifBlank { "メディアのみの下書き" } ?: "空の下書き", color = c.text, maxLines = 2,
                         modifier = Modifier.fillMaxWidth().clickable { text = item?.text.orEmpty(); images = emptyList(); restoredMediaIds = item?.media?.map { it.id }.orEmpty(); onDraftChanged(text, images); draftPickerOpen = false }.padding(vertical = 12.dp))
                     HorizontalDivider(color = c.border)
                 }
@@ -278,8 +282,8 @@ fun FullScreenComposer(
     var pollHours by remember { mutableStateOf("0") }
     var pollMinutes by remember { mutableStateOf("0") }
     var directPostApproved by rememberSaveable(text) { mutableStateOf(false) }
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_IMAGES)) { picked ->
-        images = (images + picked).distinct().take(MAX_IMAGES)
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_MEDIA_ITEMS)) { picked ->
+        images = (images + picked).distinct().take(MAX_MEDIA_ITEMS)
     }
     val weight = postWeight(text)
     val normalizedPoll = pollOptions?.map { it.trim() }
@@ -334,7 +338,7 @@ fun FullScreenComposer(
                     Row(Modifier.fillMaxWidth().padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         images.forEach { uri ->
                             Box(Modifier.size(112.dp).clip(RoundedCornerShape(14.dp)).background(c.elev2)) {
-                                AsyncImage(model = uri, imageLoader = loader, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                SelectedMediaThumbnail(uri, loader, Modifier.fillMaxSize())
                                 Box(Modifier.align(Alignment.TopEnd).padding(6.dp).size(28.dp).clip(CircleShape).background(Color(0xBB000000)).clickable { images = images - uri }, contentAlignment = Alignment.Center) {
                                     NorthIcon(NIcons.Close, Color.White, 16.dp, modifier = Modifier.size(16.dp))
                                 }
@@ -350,8 +354,8 @@ fun FullScreenComposer(
         }
         HorizontalDivider(color = c.border)
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            val canAdd = !posting && images.size < MAX_IMAGES
-            Box(Modifier.size(44.dp).clip(CircleShape).alpha(if (canAdd) 1f else .4f).clickable(enabled = canAdd) { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }, contentAlignment = Alignment.Center) {
+            val canAdd = !posting && images.size < MAX_MEDIA_ITEMS
+            Box(Modifier.size(44.dp).clip(CircleShape).alpha(if (canAdd) 1f else .4f).clickable(enabled = canAdd) { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) }, contentAlignment = Alignment.Center) {
                 NorthIcon(NIcons.Image, c.accent, 25.dp, modifier = Modifier.size(25.dp))
             }
             Text(if (pollOptions == null) "投票を追加" else "投票を編集", color = c.accent, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 10.dp).clickable { pollEditorOpen = true })
@@ -369,7 +373,7 @@ fun FullScreenComposer(
                 else if (drafts.isEmpty()) Text("保存された下書きはありません", color = c.textMuted)
                 else drafts.take(10).forEach { draft ->
                     val item = draft.items.firstOrNull()
-                    Text(item?.text?.ifBlank { "画像のみの下書き" } ?: "空の下書き", color = c.text, maxLines = 2,
+                    Text(item?.text?.ifBlank { "メディアのみの下書き" } ?: "空の下書き", color = c.text, maxLines = 2,
                         modifier = Modifier.fillMaxWidth().clickable { text = item?.text.orEmpty(); images = emptyList(); restoredMediaIds = item?.media?.map { it.id }.orEmpty(); draftPickerOpen = false }.padding(vertical = 12.dp))
                     HorizontalDivider(color = c.border)
                 }
@@ -411,6 +415,79 @@ fun FullScreenComposer(
         confirmButton = { TextButton(onClick = { onSaveDraft(text, images, restoredMediaIds) { confirmSaveOnClose = false; onClose() } }) { Text("保存して閉じる", color = c.accent, fontWeight = FontWeight.Bold) } },
         dismissButton = { TextButton(onClick = { confirmSaveOnClose = false; onClose() }) { Text("保存しない", color = c.danger) } },
     )
+}
+
+/** 選択した画像または動画の投稿前プレビュー。動画は端末内ファイルから静止画を抽出する。 */
+@Composable
+private fun SelectedMediaThumbnail(uri: Uri, loader: ImageLoader, modifier: Modifier = Modifier) {
+    val c = North.colors
+    val context = LocalContext.current
+    val isVideo = remember(uri, context) {
+        context.contentResolver.getType(uri)?.startsWith("video/") == true
+    }
+    Box(modifier.background(c.elev2), contentAlignment = Alignment.Center) {
+        if (isVideo) {
+            val thumbnail by produceState<ImageBitmap?>(null, uri, context) {
+                value = withContext(Dispatchers.IO) { extractVideoThumbnail(context, uri) }
+            }
+            thumbnail?.let {
+                Image(
+                    bitmap = it,
+                    contentDescription = "選択した動画のプレビュー",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            Box(
+                Modifier.size(44.dp).clip(CircleShape).background(Color(0x99000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("▶", color = Color.White, fontSize = 23.sp)
+            }
+            Text(
+                "動画",
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.align(Alignment.BottomStart).background(Color(0x99000000)).padding(horizontal = 7.dp, vertical = 4.dp),
+            )
+        } else {
+            AsyncImage(
+                model = uri,
+                imageLoader = loader,
+                contentDescription = "選択した画像",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+}
+
+private fun extractVideoThumbnail(context: android.content.Context, uri: Uri): ImageBitmap? {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(context, uri)
+        val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+        val frameTimeUs = minOf(durationMs / 2, 1_000L) * 1_000L
+        val frame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 512
+            val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 512
+            val scale = minOf(1f, 512f / maxOf(width, height).coerceAtLeast(1))
+            retriever.getScaledFrameAtTime(
+                frameTimeUs,
+                MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                (width * scale).toInt().coerceAtLeast(1),
+                (height * scale).toInt().coerceAtLeast(1),
+            )
+        } else {
+            retriever.getFrameAtTime(frameTimeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        }
+        frame?.asImageBitmap()
+    } catch (_: Exception) {
+        null
+    } finally {
+        runCatching { retriever.release() }
+    }
 }
 
 /** 開発者向けタグを含む投稿を、誤って一般のSNS不具合窓口へ流さないための確認UI。 */
@@ -468,6 +545,14 @@ private fun AppBugReportWarning(
                     Modifier
                         .clip(CircleShape)
                         .background(c.elev3)
+                        // 描画だけで進捗を重ねる。子要素のfillMaxHeightで親Rowを全画面まで
+                        // 押し広げないようにし、ボタン自身の通常サイズを維持する。
+                        .drawBehind {
+                            drawRect(
+                                color = c.accent,
+                                size = Size(size.width * holdProgress, size.height),
+                            )
+                        }
                         .pointerInput(text) {
                             detectTapGestures(onPress = {
                                 holding = true
@@ -478,13 +563,6 @@ private fun AppBugReportWarning(
                         .padding(horizontal = 13.dp, vertical = 9.dp),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Box(
-                        Modifier
-                            .align(Alignment.CenterStart)
-                            .fillMaxHeight()
-                            .fillMaxWidth(holdProgress)
-                            .background(c.accent),
-                    )
                     Text("そのまま投稿（${secondsRemaining}秒長押し）", color = c.text, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }

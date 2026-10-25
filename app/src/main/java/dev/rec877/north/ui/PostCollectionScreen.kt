@@ -42,6 +42,7 @@ private class PostCollectionController(
     private var started = false
     fun start() { if (!started) { started = true; vm.launchSafely { posts.first() } } }
     override fun patch(id: String, f: (Post) -> Post) = posts.patch(id, f)
+    override fun removePost(id: String) = posts.remove(id)
     override fun onReplyPosted() = Unit
 }
 

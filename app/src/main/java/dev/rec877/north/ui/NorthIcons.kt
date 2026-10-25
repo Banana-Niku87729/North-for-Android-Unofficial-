@@ -26,6 +26,7 @@ class NIcon(
 )
 
 object NIcons {
+    val Message = NIcon(strokes = listOf("M3 5h18v14H3Z", "m3 5 9 7 9-7"))
     val Reply = NIcon(strokes = listOf(
         "M4 11.5c0-3.6 3.1-6.5 7-6.5h2c3.9 0 7 2.9 7 6.5S16.9 18 13 18h-1.5L7 21.2V17.4C5.2 16.2 4 14 4 11.5Z"
     ))
@@ -71,6 +72,14 @@ object NIcons {
     ))
     val Back = NIcon(strokes = listOf("M19 12H5", "m11 18-6-6 6-6"), strokeWidth = 2.2f)
     val Close = NIcon(strokes = listOf("M6 6l12 12M18 6L6 18"), strokeWidth = 2.2f)
+    val More = NIcon(fills = listOf(
+        "M5 10.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3Z",
+        "M12 10.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3Z",
+        "M19 10.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3Z",
+    ))
+    val Pin = NIcon(strokes = listOf(
+        "m8 4 8 0", "m9 4 1 6-3 3h10l-3-3 1-6", "M12 13v7", "m10 20 2 2 2-2",
+    ))
     val Sparkle = NIcon(
         fills = listOf("M0 -118 C 1.4 -24 15 -2.2 80 0 C 15 2.2 1.4 24 0 118 C -1.4 24 -15 2.2 -80 0 C -15 -2.2 -1.4 -24 0 -118 Z"),
         viewport = 256f,

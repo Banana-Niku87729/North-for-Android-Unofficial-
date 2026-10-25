@@ -1,5 +1,6 @@
 package dev.rec877.north.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +48,10 @@ fun AccountDrawer(vm: MainViewModel, loader: ImageLoader, onDismiss: () -> Unit)
     val browser = remember { CustomTabsIntent.Builder().build() }
     val accountMenuOpen = remember { mutableStateOf(false) }
 
+    BackHandler {
+        if (accountMenuOpen.value) accountMenuOpen.value = false else onDismiss()
+    }
+
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().background(Color(0x99000000)).clickable(onClick = onDismiss))
         Column(
@@ -70,7 +75,13 @@ fun AccountDrawer(vm: MainViewModel, loader: ImageLoader, onDismiss: () -> Unit)
                 me?.let { user ->
                     Column(Modifier.fillMaxWidth().clickable { onDismiss(); vm.openUser(user.handle) }.padding(horizontal = 16.dp, vertical = 4.dp)) {
                         Avatar(user, 48.dp, loader, Modifier.size(48.dp))
-                        Text(user.name, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                        Row(
+                            Modifier.padding(top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(user.name, color = c.text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            UserBadges(user)
+                        }
                         Text("@${user.handle}", color = c.textMuted, fontSize = 14.sp)
                     }
                     Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.spacedBy(18.dp)) {

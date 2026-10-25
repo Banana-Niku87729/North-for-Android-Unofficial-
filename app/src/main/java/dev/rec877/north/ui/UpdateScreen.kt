@@ -1,5 +1,6 @@
 package dev.rec877.north.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -46,6 +47,7 @@ fun UpdateScreen(vm: MainViewModel) {
     val c = North.colors
     var selected by remember { mutableStateOf<AppUpdate?>(null) }
     LaunchedEffect(Unit) { vm.checkForUpdates() }
+    BackHandler(enabled = selected != null) { selected = null }
 
     if (selected != null) {
         UpdateDetail(selected!!, canDownload = vm.canInstallUpdate(selected!!), onBack = { selected = null }, onDownload = vm::downloadUpdate)

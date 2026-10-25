@@ -27,17 +27,47 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 private class ErrInfo(val code: Int?, val message: String?, val scopes: List<String>)
+
+private const val MAX_UPLOAD_BYTES = 50L * 1024 * 1024
+private val SUPPORTED_VIDEO_TYPES = setOf("video/mp4", "video/quicktime", "video/webm")
+
+/** Content URIを全量メモリへ展開せず、上限を確認しながらOkHttpへ流す。 */
+private class ContentUriRequestBody(
+    private val resolver: ContentResolver,
+    private val uri: Uri,
+    private val mediaType: okhttp3.MediaType,
+    private val declaredLength: Long,
+) : RequestBody() {
+    override fun contentType() = mediaType
+    override fun contentLength(): Long = declaredLength.takeIf { it >= 0 } ?: -1L
+
+    override fun writeTo(sink: BufferedSink) {
+        resolver.openInputStream(uri)?.use { input ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+                if (total > MAX_UPLOAD_BYTES) throw IOException("画像・動画は50MB以下を選択してください")
+                sink.write(buffer, 0, count)
+            }
+        } ?: throw IOException("メディアを読み込めませんでした")
+    }
+}
 
 private fun parseErr(body: String): ErrInfo {
     val e = runCatching {
@@ -103,11 +133,11 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
             return http.newCall(req).execute().use { Resp(it.code, it.body?.string().orEmpty()) }
         }
 
-        var token = auth.accessToken()
-        var r = exec(token)
+        var token = auth.authToken()
+        var r = exec(token.value)
         if (r.code == 401) { // 失効していたら1回だけ更新して再試行（同じIdempotency-Keyで安全に）
             token = auth.refreshAfter(token)
-            r = exec(token)
+            r = exec(token.value)
         }
         if (r.code !in 200..299) throw ApiException(r.code, r.text)
         r.text
@@ -115,6 +145,39 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
 
     suspend fun me(): User =
         json.decodeFromString<Envelope<User>>(send("GET", "/2/users/me")).data
+
+    suspend fun dmConversations(requests: Boolean, cursor: String? = null): DmConversationPage =
+        json.decodeFromString<Envelope<DmConversationPage>>(send("GET",
+            "/2/dm/conversations?requests=$requests" +
+                (cursor?.let { "&cursor=" + URLEncoder.encode(it, "UTF-8") } ?: ""))).data
+
+    suspend fun createDm(handle: String): DmConversation =
+        json.decodeFromString<Envelope<DmConversation>>(send("POST", "/2/dm/conversations",
+            buildJsonObject { put("handle", handle) }.toString(), idempotent = true)).data
+
+    suspend fun dmMessages(id: String, cursor: String? = null): DmMessagePage =
+        json.decodeFromString<Envelope<DmMessagePage>>(send("GET",
+            "/2/dm/conversations/${URLEncoder.encode(id, "UTF-8")}/messages" + cursorQuery(cursor))).data
+
+    suspend fun sendDm(id: String, text: String, mediaId: String?, key: String): DmMessage =
+        json.decodeFromString<Envelope<DmMessage>>(send("POST",
+            "/2/dm/conversations/${URLEncoder.encode(id, "UTF-8")}/messages",
+            buildJsonObject {
+                put("text", text)
+                if (mediaId != null) putJsonArray("mediaIds") { add(mediaId) }
+            }.toString(), extraHeaders = mapOf("Idempotency-Key" to key))).data
+
+    suspend fun markDmRead(id: String) {
+        send("POST", "/2/dm/conversations/${URLEncoder.encode(id, "UTF-8")}/read", idempotent = true)
+    }
+
+    suspend fun acceptDm(id: String) {
+        send("POST", "/2/dm/conversations/${URLEncoder.encode(id, "UTF-8")}/accept", idempotent = true)
+    }
+
+    suspend fun rejectDm(id: String) {
+        send("DELETE", "/2/dm/conversations/${URLEncoder.encode(id, "UTF-8")}/request")
+    }
 
     /** ranked=true で「おすすめ」の並び。cursorは加工せずそのまま渡す */
     suspend fun homeTimeline(cursor: String? = null, ranked: Boolean = false): PostPage {
@@ -182,18 +245,32 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         return json.decodeFromString<Envelope<Draft>>(send("POST", "/2/drafts", body, idempotent = true)).data
     }
 
-    /** 画像を1枚アップロードして Media を返す（返ったidを createPost の mediaIds に渡す） */
+    /** 画像または動画を1件アップロードして Media を返す（返ったidを createPost の mediaIds に渡す） */
     suspend fun uploadMedia(resolver: ContentResolver, uri: Uri, purpose: String = "posts"): Media {
         val mime = resolver.getType(uri) ?: "application/octet-stream"
-        val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "image"
-        val bytes = withContext(Dispatchers.IO) {
-            resolver.openInputStream(uri)?.use { it.readBytes() }
-        } ?: throw IOException("画像を読み込めませんでした")
+        if (mime.startsWith("video/") && mime !in SUPPORTED_VIDEO_TYPES) {
+            throw IOException("動画はMP4、MOV、WebM形式を選択してください")
+        }
+        var declaredLength = -1L
+        val name = resolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+            null,
+            null,
+            null,
+        )?.use { c ->
+            if (!c.moveToFirst()) return@use null
+            val sizeIndex = c.getColumnIndex(OpenableColumns.SIZE)
+            if (sizeIndex >= 0 && !c.isNull(sizeIndex)) declaredLength = c.getLong(sizeIndex)
+            val nameIndex = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (nameIndex >= 0 && !c.isNull(nameIndex)) c.getString(nameIndex) else null
+        } ?: "media"
+        if (declaredLength > MAX_UPLOAD_BYTES) throw IOException("画像・動画は50MB以下を選択してください")
+        val mediaType = mime.toMediaTypeOrNull() ?: "application/octet-stream".toMediaType()
 
         val form = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
-            .addFormDataPart("file", name, bytes.toRequestBody(mime.toMediaType()))
+            .addFormDataPart("file", name, ContentUriRequestBody(resolver, uri, mediaType, declaredLength))
             .build()
         val text = send(
             "POST", "/2/media/upload",
@@ -203,6 +280,33 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         // OAuthは { "data": {...} } で包まれる。念のため包まれていない形も受ける
         return runCatching { json.decodeFromString<Envelope<Media>>(text).data }
             .getOrElse { json.decodeFromString<Media>(text) }
+    }
+
+    /** 動画の変換状況を取得する。 */
+    suspend fun mediaStatus(id: String): Media {
+        val text = send("GET", "/2/media/$id")
+        return runCatching { json.decodeFromString<Envelope<Media>>(text).data }
+            .getOrElse { json.decodeFromString<Media>(text) }
+    }
+
+    /** 動画はサーバー側の変換完了を待ってから投稿へ添付する。 */
+    suspend fun awaitMediaReady(uploaded: Media): Media {
+        var media = uploaded
+        if (media.status.equals("FAILED", ignoreCase = true)) {
+            throw IOException(media.errorMessage ?: "動画の処理に失敗しました")
+        }
+        if (!media.status.equals("PENDING", ignoreCase = true)) return media
+
+        repeat(200) { // Web版と同じく最大約5分待つ
+            delay(1_500)
+            media = mediaStatus(uploaded.id)
+            when {
+                media.status.equals("READY", ignoreCase = true) -> return media
+                media.status.equals("FAILED", ignoreCase = true) ->
+                    throw IOException(media.errorMessage ?: "動画の処理に失敗しました")
+            }
+        }
+        throw IOException("動画の処理に時間がかかっています。しばらくしてからもう一度お試しください")
     }
 
     // ---------------- ポスト詳細・プロフィール ----------------
@@ -269,6 +373,21 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         send("PUT", "/2/bookmark-folders/$folderId/tweets/$tweetId", idempotent = true)
     }
 
+    /** 自分のプロフィールにポストを固定する（posts.write が必要）。 */
+    suspend fun pinPost(id: String) {
+        val body = buildJsonObject { put("tweetId", id) }.toString()
+        send("PUT", "/2/users/me/pinned", body, idempotent = true)
+    }
+
+    suspend fun unpinPost() { send("DELETE", "/2/users/me/pinned") }
+
+    suspend fun setReplyPolicy(id: String, policy: String) {
+        val body = buildJsonObject { put("replyPolicy", policy) }.toString()
+        send("PATCH", "/2/tweets/$id", body, idempotent = true)
+    }
+
+    suspend fun deletePost(id: String) { send("DELETE", "/2/tweets/$id") }
+
     suspend fun lists(): NorthLists = json.decodeFromString<Envelope<NorthLists>>(send("GET", "/2/lists")).data
     suspend fun createList(name: String, description: String?, isPrivate: Boolean): NorthList {
         val body = buildJsonObject { put("name", name); put("private", isPrivate); if (description != null) put("description", description) }.toString()
@@ -298,6 +417,15 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         send("DELETE", "/2/users/${URLEncoder.encode(handle, "UTF-8")}/follow")
     }
 
+    /** フォロー中ユーザーの新規ポストを、本人宛ての POST 通知として受け取る。 */
+    suspend fun enableAccountNotifications(handle: String) {
+        send("POST", "/2/users/${URLEncoder.encode(handle, "UTF-8")}/account-notifications", idempotent = true)
+    }
+
+    suspend fun disableAccountNotifications(handle: String) {
+        send("DELETE", "/2/users/${URLEncoder.encode(handle, "UTF-8")}/account-notifications")
+    }
+
     // ---------------- 通知 ----------------
     suspend fun notifications(cursor: String? = null): NotificationPage {
         val q = if (cursor != null) "?cursor=" + URLEncoder.encode(cursor, "UTF-8") else ""
@@ -324,13 +452,13 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         val sse = http.newBuilder().readTimeout(70, TimeUnit.SECONDS).build()
         var backoff = 5_000L
         while (isActive) {
-            var token: String? = null
+            var token: AuthToken? = null
             try {
-                val t = auth.accessToken()
+                val t = auth.authToken()
                 token = t
                 val req = Request.Builder()
                     .url(Config.API_BASE + "/2/notifications/stream")
-                    .header("Authorization", "Bearer $t")
+                    .header("Authorization", "Bearer ${t.value}")
                     .header("Accept", "text/event-stream")
                     .build()
                 val call = sse.newCall(req)

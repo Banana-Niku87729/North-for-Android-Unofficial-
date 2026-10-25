@@ -1,5 +1,6 @@
 package dev.rec877.north.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -47,6 +48,13 @@ fun SettingsScreen(vm: MainViewModel) {
     }
     val c = North.colors
     var page by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = page != null) {
+        page = when (page) {
+            "customize" -> "accessibility"
+            "display", "accessibility" -> "appearance"
+            else -> null
+        }
+    }
     when (page) {
         "appearance" -> {
             AppearanceHub(onBack = { page = null }, open = { destination -> page = destination })

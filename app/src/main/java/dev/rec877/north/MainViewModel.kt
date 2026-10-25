@@ -23,6 +23,7 @@ import okhttp3.OkHttpClient
 import dev.rec877.north.ui.theme.NorthColors
 import dev.rec877.north.ui.theme.midnightColors
 import dev.rec877.north.ui.theme.northColors
+import java.util.Locale
 
 data class UiState(
     val loggedIn: Boolean = false,
@@ -71,6 +72,12 @@ interface ScreenController {
 
     /** 返信が投稿されたとき */
     fun onReplyPosted()
+
+    /** 削除されたポストを保持中の一覧から取り除く。 */
+    fun removePost(id: String) = Unit
+
+    /** 自分の固定ポストが変わったとき、開いているプロフィールにも反映する。 */
+    fun onPinnedPostChanged(ownerId: String, post: Post?) = Unit
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -267,6 +274,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         bgNotif = on
         prefs.edit().putBoolean(K_BG_NOTIF, on).apply()
         if (on) BackgroundNotifications.enable(getApplication()) else BackgroundNotifications.disable(getApplication())
+    }
+
+    /** ベル購読の現在値を端末にも控え、プロフィールへ即時反映する。 */
+    private fun accountNotificationKey(handle: String): String =
+        K_ACCOUNT_NOTIFICATION_PREFIX + (auth.activeAccountId() ?: "none") + ":" + handle.lowercase(Locale.ROOT)
+
+    private fun legacyAccountNotificationKey(handle: String): String =
+        K_ACCOUNT_NOTIFICATION_PREFIX + handle.lowercase(Locale.ROOT)
+
+    fun isAccountNotificationEnabled(handle: String): Boolean {
+        val scopedKey = accountNotificationKey(handle)
+        if (prefs.contains(scopedKey)) return prefs.getBoolean(scopedKey, false)
+
+        // 旧版はアカウントIDなしで保存していた。アップデート後も表示状態を失わないよう、
+        // 現在ログイン中のアカウント用キーへ一度だけ移行する。
+        val legacyKey = legacyAccountNotificationKey(handle)
+        if (!prefs.contains(legacyKey)) return false
+        val enabled = prefs.getBoolean(legacyKey, false)
+        if (auth.activeAccountId() != null) {
+            prefs.edit().putBoolean(scopedKey, enabled).remove(legacyKey).apply()
+        }
+        return enabled
+    }
+
+    fun setAccountNotifications(handle: String, enabled: Boolean, onError: () -> Unit) {
+        val preferenceKey = accountNotificationKey(handle)
+        launchSafely(onError = onError) {
+            if (enabled) api.enableAccountNotifications(handle) else api.disableAccountNotifications(handle)
+            prefs.edit().putBoolean(preferenceKey, enabled).apply()
+            ui = ui.copy(message = if (enabled) "@${handle} の新着ポスト通知をオンにしました" else "@${handle} の新着ポスト通知をオフにしました")
+        }
     }
 
     /** Android 13以上: 通知の許可をまだ聞いていなければ true（聞いたことは覚えておく） */
@@ -627,7 +665,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (text.isBlank() && images.isEmpty() && existingMediaIds.isEmpty()) return
         launchSafely {
             val resolver = getApplication<Application>().contentResolver
-            val mediaIds = existingMediaIds + images.map { api.uploadMedia(resolver, it, purpose = "draft").id }
+            val mediaIds = existingMediaIds + images.map {
+                api.awaitMediaReady(api.uploadMedia(resolver, it, purpose = "draft")).id
+            }
             api.createDraft(text.trim(), mediaIds)
             loadDrafts()
             ui = ui.copy(message = "下書きを保存しました")
@@ -672,7 +712,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------- 投稿・リアクション ----------------
-    /** 画像があれば先に1枚ずつアップロードし、そのIDを付けて投稿する */
+    /** 画像・動画があれば先に1件ずつアップロードし、動画の変換完了後に投稿する。 */
     fun post(
         text: String,
         images: List<Uri>,
@@ -686,7 +726,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         launchSafely {
             ui = ui.copy(posting = true, message = null, reloginHint = false)
             val resolver = getApplication<Application>().contentResolver
-            val mediaIds = existingMediaIds + images.map { api.uploadMedia(resolver, it).id }
+            val mediaIds = existingMediaIds + images.map {
+                api.awaitMediaReady(api.uploadMedia(resolver, it)).id
+            }
             api.createPost(text.trim(), mediaIds, replyToId, quoteId, poll)
             ui = ui.copy(posting = false)
             onDone()
@@ -757,6 +799,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ui = ui.copy(message = "「${folder.name}」に追加しました")
     }
 
+    fun pinPost(post: Post) = launchSafely {
+        val owner = ui.me ?: return@launchSafely
+        api.pinPost(post.id)
+        setPinnedPost(owner.id, post.copy(pinned = true))
+        ui = ui.copy(message = "ポストをプロフィールに固定しました")
+    }
+
+    fun unpinPost(post: Post) = launchSafely {
+        val owner = ui.me ?: return@launchSafely
+        api.unpinPost()
+        setPinnedPost(owner.id, null)
+        updatePost(post.id) { it.copy(pinned = false) }
+        ui = ui.copy(message = "ポストの固定表示を解除しました")
+    }
+
+    fun setPostReplyPolicy(post: Post, policy: String) = launchSafely {
+        api.setReplyPolicy(post.id, policy)
+        updatePost(post.id) { it.copy(replyPolicy = policy) }
+        ui = ui.copy(
+            message = if (policy == "FOLLOWING") "返信をフォロー中のみに制限しました" else "返信を全員に開放しました"
+        )
+    }
+
+    fun deletePost(post: Post) = launchSafely {
+        api.deletePost(post.id)
+        removePost(post.id)
+        if (backStack.lastOrNull() == Dest.post(post.id)) back()
+        ui = ui.copy(message = "ポストを削除しました")
+    }
+
     fun logout() = launchSafely {
         auth.logout()
         accounts = auth.accounts()
@@ -780,6 +852,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ui = ui.copy(posts = ui.posts.map { it.patched(id, f) })
         search = search.copy(results = search.results.map { it.patched(id, f) })
         screens.values.toList().forEach { it.patch(id, f) }
+    }
+
+    private fun setPinnedPost(ownerId: String, post: Post?) {
+        ui.me?.takeIf { it.id == ownerId }?.let { me ->
+            me.pinnedTweet?.let { previous -> updatePost(previous.id) { it.copy(pinned = false) } }
+            ui = ui.copy(me = me.copy(pinnedTweet = post))
+        }
+        post?.let { pinned -> updatePost(pinned.id) { it.copy(pinned = true) } }
+        screens.values.toList().forEach { it.onPinnedPostChanged(ownerId, post) }
+    }
+
+    private fun removePost(id: String) {
+        ui = ui.copy(
+            posts = ui.posts.mapNotNull { it.withoutDeleted(id) },
+            me = ui.me?.let { me -> if (me.pinnedTweet?.id == id) me.copy(pinnedTweet = null) else me },
+        )
+        search = search.copy(results = search.results.mapNotNull { it.withoutDeleted(id) })
+        screens.values.toList().forEach { it.removePost(id) }
     }
 
     /** 画面から使えるように公開している。例外は共通のエラー表示（赤いバー）に流す */
@@ -813,6 +903,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val K_HISTORY = "search_history"
         const val K_BG_NOTIF = "bg_notif"
         const val K_ASKED_PERM = "asked_notif_perm"
+        const val K_ACCOUNT_NOTIFICATION_PREFIX = "account_notification_"
         const val K_ACCENT = "accent"
         const val K_DIM_BG = "dim_background"
         const val K_THEME = "theme"

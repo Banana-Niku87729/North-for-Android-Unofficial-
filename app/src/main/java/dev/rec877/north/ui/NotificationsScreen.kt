@@ -31,12 +31,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.ImageLoader
@@ -91,7 +88,9 @@ fun NotificationsScreen(vm: MainViewModel, loader: ImageLoader, listState: LazyL
                         onClick = {
                             val tweet = item.tweet
                             val actor = item.actors.firstOrNull()
-                            if (tweet != null) vm.openPost(tweet.id)
+                            // フォロー通知は最新の一人ではなく、自分のフォロワー全体を確認できる一覧へ。
+                            if (item.kind == "FOLLOW") vm.ui.me?.let { vm.open(dev.rec877.north.Dest.follows(it.handle, "followers")) }
+                            else if (tweet != null) vm.openPost(tweet.id)
                             else if (actor != null) vm.openUser(actor.handle)
                         },
                         onOpenUser = { vm.openUser(it) },
@@ -143,10 +142,7 @@ private fun NotificationRow(
     }
 
     val (name, tail) = notificationWho(n)
-    val title = buildAnnotatedString {
-        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(name) }
-        append(tail + notificationAction(n.kind))
-    }
+    val firstActor = n.actors.firstOrNull()
 
     val tweet = n.tweet?.takeIf { !it.unavailable }
     // 対象ポストの画像があれば、右にサムネイル（サイトの .notif__thumb: 48dp・角丸8）
@@ -178,7 +174,15 @@ private fun NotificationRow(
                         }
                     }
                 }
-                Text(title, color = c.text, fontSize = 15.sp, lineHeight = 20.sp)
+                if (firstActor != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        UserBadges(firstActor)
+                    }
+                    Text(tail + notificationAction(n.kind), color = c.text, fontSize = 15.sp, lineHeight = 20.sp)
+                } else {
+                    Text(name + tail + notificationAction(n.kind), color = c.text, fontSize = 15.sp, lineHeight = 20.sp)
+                }
                 if (tweet != null && tweet.text.isNotEmpty()) {
                     Text(
                         tweet.text,

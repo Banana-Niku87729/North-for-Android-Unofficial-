@@ -13,8 +13,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.IOException
 
 data class AppUpdate(
     val version: String,
@@ -40,9 +42,8 @@ class UpdateManager(private val http: OkHttpClient, private val context: Context
             val fullTag = obj["tag_name"]?.jsonPrimitive?.content ?: return@mapNotNull null
             val tag = fullTag.substringAfterLast('-', "").lowercase()
             if (tag != "regular" && tag != "emergency") return@mapNotNull null
-            // Release titleを優先するが、未入力ならタグの v1.2.3 部分を使う。
-            val version = obj["name"]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotEmpty() }
-                ?: fullTag.removePrefix("v").removeSuffix("-$tag")
+            // 比較に使う版番号は自由入力のRelease titleではなく、規定形式のタグから得る。
+            val version = fullTag.removePrefix("v").removeSuffix("-$tag")
             val apk = obj["assets"]?.jsonArray?.firstOrNull { it.jsonObject["name"]?.jsonPrimitive?.content?.endsWith(".apk", true) == true }
                 ?.jsonObject?.get("browser_download_url")?.jsonPrimitive?.content ?: return@mapNotNull null
             AppUpdate(
@@ -65,12 +66,19 @@ class UpdateManager(private val http: OkHttpClient, private val context: Context
         releases().firstOrNull { isNewer(it.version, current) }
 
     fun download(update: AppUpdate): Long {
-        val request = DownloadManager.Request(Uri.parse(update.apkUrl))
+        val url = update.apkUrl.toHttpUrlOrNull()
+            ?: throw IOException("更新ファイルのURLが不正です")
+        if (!url.isHttps || url.host != "github.com") {
+            throw IOException("更新ファイルの配布元を確認できません")
+        }
+        val safeVersion = update.version.replace(Regex("[^A-Za-z0-9._-]"), "_")
+            .take(64).ifBlank { "update" }
+        val request = DownloadManager.Request(Uri.parse(url.toString()))
             .setTitle("North ${update.version}")
             .setDescription("タップしてインストールを開始します")
             .setMimeType("application/vnd.android.package-archive")
             .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "North-${update.version}.apk")
+            .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "North-$safeVersion.apk")
         val id = (context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
         UpdateInstaller.rememberDownload(context, id)
         return id
@@ -96,27 +104,30 @@ object UpdateInstaller {
             .putLong(KEY_DOWNLOAD_ID, downloadId).apply()
     }
 
-    fun openPendingInstaller(activity: android.app.Activity): Boolean {
+    enum class Action { NONE, PERMISSION_REQUESTED, INSTALLER_OPENED }
+
+    fun openPendingInstaller(activity: android.app.Activity, requestPermission: Boolean = true): Action {
         val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val id = prefs.getLong(KEY_DOWNLOAD_ID, -1L)
-        if (id < 0) return false
+        if (id < 0) return Action.NONE
         val downloads = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val complete = downloads.query(DownloadManager.Query().setFilterById(id)).use { cursor ->
             cursor.moveToFirst() && cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS)) == DownloadManager.STATUS_SUCCESSFUL
         }
-        if (!complete) return false
+        if (!complete) return Action.NONE
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
+            if (!requestPermission) return Action.NONE
             activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
                 .setData(Uri.parse("package:${activity.packageName}")))
-            return true
+            return Action.PERMISSION_REQUESTED
         }
-        val apk = downloads.getUriForDownloadedFile(id) ?: return false
+        val apk = downloads.getUriForDownloadedFile(id) ?: return Action.NONE
         // インストーラーを起動できた時点で消す。キャンセルした場合でも、設定から更新を再試行できる。
         prefs.edit().remove(KEY_DOWNLOAD_ID).apply()
         activity.startActivity(Intent(Intent.ACTION_VIEW)
             .setDataAndType(apk, "application/vnd.android.package-archive")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
-        return true
+        return Action.INSTALLER_OPENED
     }
 }
