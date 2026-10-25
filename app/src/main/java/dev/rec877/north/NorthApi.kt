@@ -146,6 +146,9 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
     suspend fun me(): User =
         json.decodeFromString<Envelope<User>>(send("GET", "/2/users/me")).data
 
+    suspend fun dmUnreadCount(): Int =
+        json.decodeFromString<Envelope<UnreadCount>>(send("GET", "/2/dm/unread-count")).data.count
+
     suspend fun dmConversations(requests: Boolean, cursor: String? = null): DmConversationPage =
         json.decodeFromString<Envelope<DmConversationPage>>(send("GET",
             "/2/dm/conversations?requests=$requests" +

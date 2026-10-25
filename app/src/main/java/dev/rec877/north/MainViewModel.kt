@@ -18,6 +18,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import dev.rec877.north.ui.theme.NorthColors
@@ -81,6 +84,39 @@ interface ScreenController {
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+    var dmUnread by mutableStateOf(0)
+        private set
+    private var dmUnreadGeneration = 0
+    private val dmUnreadMutex = Mutex()
+
+    private fun resetDmUnread() {
+        dmUnreadGeneration++
+        dmUnread = 0
+    }
+
+    /** 同時取得を直列化し、既読後やアカウント切替前の応答がバッジを上書きしないようにする。 */
+    suspend fun refreshDmUnread() {
+        val generation = dmUnreadGeneration
+        val account = activeAccountId()
+        dmUnreadMutex.withLock {
+            if (generation != dmUnreadGeneration || account != activeAccountId()) return
+            try {
+                val count = api.dmUnreadCount().coerceAtLeast(0)
+                if (generation == dmUnreadGeneration && account == activeAccountId()) dmUnread = count
+            } catch (e: CancellationException) { throw e
+            } catch (_: Exception) {
+                // 旧許可の権限不足や一時的な通信失敗では、ホームにエラーを繰り返し表示しない。
+            }
+        }
+    }
+
+    suspend fun runDmUnreadUpdates() {
+        while (true) {
+            refreshDmUnread()
+            delay(30_000)
+        }
+    }
+
     private val nApp = app as NorthApp
     private val http = nApp.http
     private val auth = nApp.auth
@@ -197,6 +233,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onRedirect(uri: Uri) = launchSafely {
         auth.handleRedirect(uri)
+        resetDmUnread()
         ui = ui.copy(loggedIn = true, message = null, reloginHint = false)
         if (bgNotif) BackgroundNotifications.enable(getApplication())
         refresh()
@@ -206,6 +243,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** アカウント切替時は画面キャッシュや検索結果を引き継がず、新しいアカウントの状態を読み直す。 */
     fun switchAccount(id: String) {
         if (!auth.switchAccount(id)) return
+        resetDmUnread()
         accounts = auth.accounts()
         searchJob?.cancel()
         candidateJob?.cancel()
@@ -224,6 +262,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val stillLoggedIn = auth.removeAccount(id)
         accounts = auth.accounts()
         if (!wasActive) return
+        resetDmUnread()
         popToRoot()
         ui = UiState(loggedIn = stillLoggedIn)
         search = SearchState(history = loadHistory())
@@ -831,6 +870,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logout() = launchSafely {
         auth.logout()
+        resetDmUnread()
         accounts = auth.accounts()
         searchJob?.cancel()
         popToRoot()

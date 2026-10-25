@@ -59,8 +59,9 @@ object NIcons {
         "m20 20-4.2-4.2",
     ), strokeWidth = 2f)
     val Bell = NIcon(strokes = listOf(
-        "M6 17v-5.5a6 6 0 1 1 12 0V17l1.6 2.2H4.4Z",
-        "M10 21.5a2.2 2.2 0 0 0 4 0",
+        // 他のナビアイコンと描画の中心を揃える（元のパスを2単位上へ）。
+        "M6 15v-5.5a6 6 0 1 1 12 0V15l1.6 2.2H4.4Z",
+        "M10 19.5a2.2 2.2 0 0 0 4 0",
     ))
     val Person = NIcon(strokes = listOf(
         "M12 12a4 4 0 1 0 0-8a4 4 0 0 0 0 8Z",

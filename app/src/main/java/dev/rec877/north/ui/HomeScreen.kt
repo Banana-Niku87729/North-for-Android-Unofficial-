@@ -145,6 +145,9 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
     LaunchedEffect(vm, lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) { vm.runNotificationStream() }
     }
+    LaunchedEffect(vm, lifecycleOwner, vm.activeAccountId()) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) { vm.runDmUnreadUpdates() }
+    }
 
     // 通知を開いている間は「見ている」。別のタブへ移る・ポスト詳細などを開くと「見終わった」ので、自動で既読にする
     val notifShowing = tab == 2 && top == null
@@ -257,6 +260,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             BottomBar(
                 selected = tab,
                 unread = vm.notif.unread,
+                dmUnread = vm.dmUnread,
                 onSelect = ::selectTab,
             )
         }
@@ -379,7 +383,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
 }
 
 @Composable
-private fun BottomBar(selected: Int, unread: Int, onSelect: (Int) -> Unit) {
+private fun BottomBar(selected: Int, unread: Int, dmUnread: Int, onSelect: (Int) -> Unit) {
     val c = North.colors
     Column {
         HorizontalDivider(color = c.border)
@@ -390,11 +394,12 @@ private fun BottomBar(selected: Int, unread: Int, onSelect: (Int) -> Unit) {
                 Triple(NIcons.Bell, "通知", 2),
                 Triple(NIcons.Message, "DM", 3),
             ).forEach { (icon, label, i) ->
+                val count = when (i) { 2 -> unread; 3 -> dmUnread; else -> 0 }
                 Box(
                     Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .semantics { contentDescription = label }
+                        .semantics { contentDescription = if (count > 0) "$label、未読${count}件" else label }
                         .clickable(role = Role.Tab) { onSelect(i) },
                     contentAlignment = Alignment.Center,
                 ) {
@@ -407,7 +412,7 @@ private fun BottomBar(selected: Int, unread: Int, onSelect: (Int) -> Unit) {
                             modifier = Modifier.size(26.dp),
                         )
                         // サイトの .nav__badge: アクセント色の丸（99超は 99+）
-                        if (i == 2 && unread > 0) {
+                        if (count > 0) {
                             Box(
                                 Modifier
                                     .align(Alignment.TopEnd)
@@ -419,7 +424,7 @@ private fun BottomBar(selected: Int, unread: Int, onSelect: (Int) -> Unit) {
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
-                                    if (unread > 99) "99+" else unread.toString(),
+                                    if (count > 99) "99+" else count.toString(),
                                     color = c.textOnAccent,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Bold,
