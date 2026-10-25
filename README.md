@@ -3,4 +3,4 @@
 <br/>
 <br/>
 
-<img src="log_wh.png" alt="BitChord app icon" width="200" />
+<img src="log_wh.png" alt="north Android Client app icon" width="200" />
