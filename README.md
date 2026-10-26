@@ -12,4 +12,4 @@
 <br/>
 
 [![Latest release](https://img.shields.io/github/v/release/banana-niku87729/North-for-Android-Unofficial-?style=for-the-badge&labelColor=0d1117)](https://github.com/banana-niku87729/North-for-Android-Unofficial-/releases)
-[![License: CC0-1.0](https://shields.io)](http://creativecommons.org)
+![LICENSE](https://img.shields.io/badge/LICENSE-CC0-yellow?style=for-the-badge)
