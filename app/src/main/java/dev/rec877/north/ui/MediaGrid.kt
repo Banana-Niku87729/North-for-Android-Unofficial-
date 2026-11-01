@@ -222,7 +222,8 @@ private fun ZoomableImage(media: Media, loader: ImageLoader) {
     AsyncImage(
         model = Config.absUrl(media.url), imageLoader = loader, contentDescription = media.altText,
         contentScale = ContentScale.Fit,
-        modifier = Modifier.fillMaxSize().transformable(state).graphicsLayer {
+        // 等倍のときはパンを取らず、外側の HorizontalPager にスワイプを渡す。
+        modifier = Modifier.fillMaxSize().transformable(state, canPan = { scale > 1f }).graphicsLayer {
             scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y
         },
     )
