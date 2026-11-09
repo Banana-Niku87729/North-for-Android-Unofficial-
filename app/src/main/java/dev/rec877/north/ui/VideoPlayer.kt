@@ -117,7 +117,7 @@ fun VideoPage(
         scale = next
         offset = if (next == 1f) Offset.Zero else offset + pan
     }
-    val videoModifier = if (zoomable) modifier.transformable(zoomState).graphicsLayer {
+    val videoModifier = if (zoomable) modifier.transformable(zoomState, canPan = { scale > 1f }).graphicsLayer {
         scaleX = scale; scaleY = scale; translationX = offset.x; translationY = offset.y
     } else modifier
 
