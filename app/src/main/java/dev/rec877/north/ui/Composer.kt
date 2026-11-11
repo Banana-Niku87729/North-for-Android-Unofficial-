@@ -38,6 +38,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -73,6 +77,19 @@ import kotlinx.coroutines.withContext
 private const val MAX_MEDIA_ITEMS = 4
 private const val MAX_WEIGHT = 280
 
+
+/** 入力欄が配置された次のフレームでカーソルを置き、キーボードを出す。 */
+@Composable
+private fun AutoFocus(enabled: Boolean, focusRequester: FocusRequester) {
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(enabled) {
+        if (!enabled) return@LaunchedEffect
+        withFrameNanos { }
+        runCatching { focusRequester.requestFocus() }
+        keyboard?.show()
+    }
+}
+
 /**
  * サイトの .composer を再現。下段にメディア追加ボタンと「ポストする」(白ピル)。
  * 画像・動画はAndroidのフォトピッカー（権限不要）で合計最大4件。送信時にアップロードしてから投稿する。
@@ -92,6 +109,8 @@ fun Composer(
     onOpenDrafts: (() -> Unit)? = null,
     onSubmitWithSavedMediaIds: ((text: String, images: List<Uri>, savedMediaIds: List<String>, onDone: () -> Unit) -> Unit)? = null,
     onReportIssue: (String) -> Unit = {},
+    /** 引用画面のように、開いた直後から入力させたいときに true */
+    autoFocus: Boolean = false,
 ) {
     val c = North.colors
     var text by rememberSaveable { mutableStateOf("") }
@@ -99,6 +118,8 @@ fun Composer(
     var restoredMediaIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var draftPickerOpen by remember { mutableStateOf(false) }
     var directPostApproved by rememberSaveable(text) { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    AutoFocus(autoFocus, focusRequester)
 
     LaunchedEffect(clearDraftVersion) {
         if (clearDraftVersion > 0) { text = ""; images = emptyList() }
@@ -137,7 +158,7 @@ fun Composer(
                 onValueChange = { text = it; onDraftChanged(it, images) },
                 textStyle = TextStyle(color = c.text, fontSize = 20.sp, lineHeight = 26.sp),
                 cursorBrush = SolidColor(c.accent),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(vertical = 12.dp).focusRequester(focusRequester),
                 decorationBox = { inner ->
                     Box {
                         if (text.isEmpty()) {
@@ -282,6 +303,8 @@ fun FullScreenComposer(
     var pollHours by remember { mutableStateOf("0") }
     var pollMinutes by remember { mutableStateOf("0") }
     var directPostApproved by rememberSaveable(text) { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    AutoFocus(enabled = true, focusRequester = focusRequester)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_MEDIA_ITEMS)) { picked ->
         images = (images + picked).distinct().take(MAX_MEDIA_ITEMS)
     }
@@ -331,7 +354,7 @@ fun FullScreenComposer(
                     onValueChange = { text = it },
                     textStyle = TextStyle(color = c.text, fontSize = 22.sp, lineHeight = 30.sp),
                     cursorBrush = SolidColor(c.accent),
-                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    modifier = Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester),
                     decorationBox = { inner -> Box { if (text.isEmpty()) Text("いまどうしてる？", color = c.textMuted, fontSize = 22.sp); inner() } },
                 )
                 if (images.isNotEmpty()) {

@@ -66,6 +66,7 @@ fun QuoteDialog(vm: MainViewModel, post: Post, loader: ImageLoader, onClose: () 
                         Box(Modifier.padding(bottom = 12.dp)) { QuotedPost(post.retweetOf ?: post, loader, noop) }
                     },
                     onReportIssue = vm::reportAppIssue,
+                    autoFocus = true,
                 )
             }
         }
