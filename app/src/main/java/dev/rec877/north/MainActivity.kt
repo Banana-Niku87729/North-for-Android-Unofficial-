@@ -12,6 +12,7 @@ import coil3.ImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import dev.rec877.north.ui.AppShell
 import dev.rec877.north.ui.LoginScreen
+import dev.rec877.north.ui.MediaPrivacyProvider
 import dev.rec877.north.ui.theme.NorthTheme
 
 class MainActivity : ComponentActivity() {
@@ -39,7 +40,9 @@ class MainActivity : ComponentActivity() {
                         .components { add(OkHttpNetworkFetcherFactory(callFactory = { vm.imageClient })) }
                         .build()
                 }
-                if (vm.ui.loggedIn) AppShell(vm, loader) else LoginScreen(vm)
+                MediaPrivacyProvider(vm.careMode, vm.mediaClassifier, vm.activeAccountId()) {
+                    if (vm.ui.loggedIn) AppShell(vm, loader) else LoginScreen(vm)
+                }
             }
         }
     }
@@ -61,11 +64,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        vm.careMode.stop()
         AppForeground.isForeground = false
     }
 
     override fun onResume() {
         super.onResume()
+        vm.careMode.restart()
         // 完了通知をタップして戻ったら、保存済みAPKをインストーラーへ渡す。
         // 未許可の場合はここから「このアプリからのインストール」設定を開く。
         when (UpdateInstaller.openPendingInstaller(this, requestPermission = !installPermissionScreenOpened)) {

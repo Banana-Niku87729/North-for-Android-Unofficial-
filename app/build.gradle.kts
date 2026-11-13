@@ -10,6 +10,15 @@ val bugReportEndpoint = (findProperty("BUG_REPORT_ENDPOINT") as String?)
     ?.replace("\"", "\\\"")
     .orEmpty()
 
+// リリース署名: CI では環境変数、ローカルでは keystore.properties(.gitignore 済み)から読む。
+// どちらも無ければ署名なしでビルドされ、デバッグビルドや第三者のビルドは影響を受けない。
+val keystoreProps = java.util.Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingValue(env: String, key: String): String? =
+    System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(key)
+
 android {
     namespace = "dev.rec877.north"
     compileSdk {
@@ -21,15 +30,38 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.1.0"
+        // CI ではタグから -PVERSION_NAME=1.2.3 を渡す。ローカルでは下の既定値。
+        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.1.5"
+
+        // x86 / x86_64 は実機でほぼ使われず、LiteRT のネイティブライブラリ分だけ APK が膨らむ。
+        // splits ではなく abiFilters にしているのは、UpdateManager が Release の最初の .apk を取るため
+        // (APK を複数に分けると別 ABI のものを掴んで端末に入らなくなる)。
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
 
         buildConfigField("String", "BUG_REPORT_ENDPOINT", "\"$bugReportEndpoint\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            val path = signingValue("KEYSTORE_PATH", "storeFile")
+            if (path != null) {
+                storeFile = file(path)
+                storePassword = signingValue("KEYSTORE_PASSWORD", "storePassword")
+                keyAlias = signingValue("KEY_ALIAS", "keyAlias")
+                keyPassword = signingValue("KEY_PASSWORD", "keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (signingConfigs.getByName("release").storeFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // 次の段階: true にして isShrinkResources も有効化すると更に小さくなる。
+            // リリースビルドで全画面を動作確認してから切り替えること。
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -53,6 +85,8 @@ android {
 }
 
 dependencies {
+    implementation("com.google.ai.edge.litert:litert:1.4.1")
+    implementation("com.google.ai.edge.litert:litert-api:1.4.1")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

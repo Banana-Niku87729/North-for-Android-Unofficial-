@@ -1,1 +1,7 @@
 /build
+
+keystore.properties
+*.jks
+*.keystore
+*.apk
+build/

@@ -84,6 +84,14 @@ interface ScreenController {
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+    val careMode = CareModeController(app)
+    val mediaClassifier = OnDeviceMediaClassifier(app)
+
+    override fun onCleared() {
+        careMode.stop()
+        mediaClassifier.close()
+        super.onCleared()
+    }
     var dmUnread by mutableStateOf(0)
         private set
     private var dmUnreadGeneration = 0
@@ -464,13 +472,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------------- ホーム ----------------
+    /** ホームの世代番号。更新・モード切替のたびに進め、古い取得結果が新しい状態を上書きしないようにする */
+    private var homeGeneration = 0
+    private var loadMoreJob: Job? = null
+
     fun refresh() = launchSafely {
-        ui = ui.copy(refreshing = true, message = null, reloginHint = false)
+        val gen = ++homeGeneration
+        loadMoreJob?.cancel() // 追加読み込み中なら破棄（古いcursorの結果が混ざらないように）
+        loadMoreJob = null
+        val ranked = ui.ranked
+        ui = ui.copy(refreshing = true, loadingMore = false, message = null, reloginHint = false)
         // アカウント切替・追加直後も、前の表示名を再利用せず必ず認可済みユーザーを取得する。
         val me = api.me()
         auth.registerAuthenticatedAccount(me)
         accounts = auth.accounts()
-        val page = api.homeTimeline(null, ui.ranked)
+        val page = api.homeTimeline(null, ranked)
+        if (gen != homeGeneration) return@launchSafely // 取得中に別の更新/切替が始まった
         rememberUsers(listOf(me) + page.items.map { it.author })
         ui = ui.copy(
             refreshing = false,
@@ -481,23 +498,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleRanked() {
-        ui = ui.copy(ranked = !ui.ranked, posts = emptyList(), nextCursor = null)
+        homeGeneration++
+        loadMoreJob?.cancel()
+        loadMoreJob = null
+        ui = ui.copy(ranked = !ui.ranked, posts = emptyList(), nextCursor = null, loadingMore = false)
         refresh()
     }
 
     fun loadMore() {
         val cursor = ui.nextCursor ?: return
         if (ui.loadingMore || ui.refreshing) return
-        launchSafely {
+        val gen = homeGeneration
+        val ranked = ui.ranked // cursorは取得時のモード専用。送信時にも同じモードを使う
+        loadMoreJob = launchSafely {
             ui = ui.copy(loadingMore = true)
-            val page = api.homeTimeline(cursor, ui.ranked) // nextCursorは加工せずそのまま渡す
-            rememberUsers(page.items.map { it.author })
-            // LazyColumnのkeyが重複すると落ちるので、IDで重複を除く
-            ui = ui.copy(
-                loadingMore = false,
-                posts = (ui.posts + page.items).distinctBy { it.id },
-                nextCursor = page.nextCursor,
-            )
+            try {
+                val page = api.homeTimeline(cursor, ranked) // nextCursorは加工せずそのまま渡す
+                if (gen != homeGeneration || ranked != ui.ranked) return@launchSafely
+                rememberUsers(page.items.map { it.author })
+                // LazyColumnのkeyが重複すると落ちるので、IDで重複を除く
+                ui = ui.copy(
+                    loadingMore = false,
+                    posts = (ui.posts + page.items).distinctBy { it.id },
+                    nextCursor = page.nextCursor,
+                )
+            } catch (e: ApiException) {
+                // 診断用: cursor系の400は、サーバーの生レスポンスと送ったcursorを表示する（止めずに残す）
+                if (gen == homeGeneration && e.status == 400) {
+                    ui = ui.copy(
+                        loadingMore = false,
+                        message = "${e.message}\n[debug] ranked=$ranked status=${e.status}\ncursor=${cursor.take(700)}\nbody=${e.body.take(300)}\n${api.lastInnerError}",
+                    )
+                } else throw e
+            }
         }
     }
 

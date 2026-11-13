@@ -1,0 +1,17 @@
+On-device NSFW image classifier
+
+Model: Yahoo Open NSFW (BSD 3-Clause), converted through devzwy/open_nsfw_android.
+Distribution: https://github.com/hoyaaaa/nsfw_detector_flutter
+Pinned revision: 77f6c72397113c7facb7ba4783ccfe70caec7c81
+Asset: assets/nsfw.tflite
+SHA-256: a476ef325f4f776602d944fd28133e945f77a74e37dafba37936110b35b7810d
+
+The preprocessing follows this distribution: 224x224 float32 BGR,
+channel means 103.939 / 116.779 / 123.68; output index 1 is the NSFW score.
+North hides images at score >= 0.4. This is a conservative heuristic, not
+a guarantee or calibrated probability. Videos and animated images remain hidden.
+
+Inference runs entirely on this device using LiteRT; no image or score is
+uploaded to a model provider. Normal authenticated media downloads still occur.
+The model is not a comprehensive classifier for violence or all sensitive topics.
+See LICENSE-model.txt and LICENSE-flutter.txt for redistribution notices.

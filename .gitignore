@@ -24,8 +24,12 @@
 /.kotlin/
 /app/release/
 /app/north.zip
-/app/src/main/java/dev/rec877/north/Config.kt
 /app/src/main/java/dev/rec877/north/north.zip
 /app/src/main/java/dev/rec877/north/そーすｗ.zip
-/gradle/
 /app/build.gradle.zip
+
+keystore.properties
+*.jks
+*.keystore
+*.apk
+build/

@@ -56,6 +56,7 @@ fun SettingsScreen(vm: MainViewModel) {
         }
     }
     when (page) {
+        "配慮モード" -> { CareModeSettings(vm) { page = null }; return }
         "appearance" -> {
             AppearanceHub(onBack = { page = null }, open = { destination -> page = destination })
             return
@@ -67,6 +68,7 @@ fun SettingsScreen(vm: MainViewModel) {
         else -> { SettingInfoPage(vm, page!!, { page = null }, ::openNorthSettings) ; return }
     }
     val sections = listOf(
+        SettingItem("配慮モード", "接続先に応じて画像・動画を非表示にします"),
         SettingItem("アカウント", "アカウント情報とログインを管理します"),
         SettingItem("ポストの設定", "ポストの送信に関する設定を管理します"),
         SettingItem("セキュリティとアカウントアクセス", "セキュリティとログイン履歴を管理します"),

@@ -182,7 +182,12 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         send("DELETE", "/2/dm/conversations/${URLEncoder.encode(id, "UTF-8")}/request")
     }
 
-    /** ranked=true で「おすすめ」の並び。cursorは加工せずそのまま渡す */
+    /**
+     * ranked=true で「おすすめ」の並び。
+     * nextCursor は API が返した包み形式（nthc.…）のまま送る。
+     * 中身の cursor だけを抜き出して送ると束縛（binding）が壊れて 89 になるため、
+     * 以前の「素の cursor を先に試す」フォールバックは廃止した。
+     */
     suspend fun homeTimeline(cursor: String? = null, ranked: Boolean = false): PostPage {
         val params = buildList {
             if (ranked) add("ranked=1")
@@ -191,6 +196,9 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         val q = if (params.isEmpty()) "" else "?" + params.joinToString("&")
         return json.decodeFromString<Envelope<PostPage>>(send("GET", "/2/timelines/home$q")).data
     }
+
+    /** 診断用（互換のため残置。現在は常に null） */
+    @Volatile var lastInnerError: String? = null
 
     /** q は north の検索窓と同じ書き方（from:ユーザー名 / #ハッシュタグ など）。tab: latest | top */
     suspend fun search(q: String, tab: String = "latest", cursor: String? = null): PostPage {

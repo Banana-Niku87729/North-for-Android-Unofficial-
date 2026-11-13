@@ -54,11 +54,16 @@ fun MediaGrid(
     httpClient: OkHttpClient,
     modifier: Modifier = Modifier,
 ) {
+    if (media.isEmpty()) return
+    if (!LocalMediaAllowed.current) {
+        MediaPrivacyGate(media, httpClient, modifier.padding(top = 12.dp)) {
+            MediaGrid(media, loader, onOpen, httpClient, modifier)
+        }
+        return
+    }
     val c = North.colors
     val items = media.take(4)
     if (items.isEmpty()) return
-    var revealed by remember(items) { mutableStateOf(false) }
-    val covered = !revealed && items.any { it.sensitive }
     val shape = RoundedCornerShape(16.dp)
 
     Box(
@@ -116,20 +121,6 @@ fun MediaGrid(
             }
         }
 
-        if (covered) {
-            // センシティブ設定のメディアは警告を挟む
-            Box(
-                Modifier.matchParentSize().background(c.elev2).clickable { revealed = true },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "センシティブな内容を含む可能性があります\nタップして表示",
-                    color = c.textMuted,
-                    fontSize = 14.sp,
-                    textAlign = TextAlign.Center,
-                )
-            }
-        }
     }
 }
 
@@ -173,6 +164,7 @@ fun MediaViewer(
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
                 val m = media[page]
+                MediaPrivacyGate(listOf(m), httpClient, Modifier.fillMaxSize()) {
                 if (m.kind == "VIDEO") {
                     VideoPage(
                         media = m,
@@ -184,6 +176,7 @@ fun MediaViewer(
                     )
                 } else {
                     ZoomableImage(m, loader)
+                }
                 }
             }
             // 動画の操作とタップが競合しないよう、閉じるボタンを常に出す

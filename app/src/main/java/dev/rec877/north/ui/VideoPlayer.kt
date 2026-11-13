@@ -60,6 +60,12 @@ fun VideoPage(
     modifier: Modifier = Modifier,
     zoomable: Boolean = false,
 ) {
+    if (!LocalMediaAllowed.current) {
+        MediaPrivacyGate(listOf(media), httpClient, modifier) {
+            VideoPage(media, httpClient, active, loader, modifier, zoomable)
+        }
+        return
+    }
     if (!active) {
         Box(modifier.background(Color.Black), contentAlignment = Alignment.Center) {
             AsyncImage(
@@ -147,6 +153,10 @@ fun VideoPage(
 /** TL内の動画。サムネイルを押したときだけプレーヤーを作るので、一覧を重くしない。 */
 @Composable
 fun InlineVideo(media: Media, httpClient: OkHttpClient, loader: ImageLoader, modifier: Modifier = Modifier) {
+    if (!LocalMediaAllowed.current) {
+        MediaPrivacyGate(listOf(media), httpClient, modifier) { InlineVideo(media, httpClient, loader, modifier) }
+        return
+    }
     var playing by remember(media.id) { mutableStateOf(false) }
     if (playing) {
         VideoPage(media, httpClient, active = true, loader = loader, modifier = modifier)
