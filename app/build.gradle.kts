@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -12,7 +14,7 @@ val bugReportEndpoint = (findProperty("BUG_REPORT_ENDPOINT") as String?)
 
 // リリース署名: CI では環境変数、ローカルでは keystore.properties(.gitignore 済み)から読む。
 // どちらも無ければ署名なしでビルドされ、デバッグビルドや第三者のビルドは影響を受けない。
-val keystoreProps = java.util.Properties().apply {
+val keystoreProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
