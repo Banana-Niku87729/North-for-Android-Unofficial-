@@ -69,6 +69,7 @@ import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import dev.rec877.north.User
 import dev.rec877.north.PollInput
+import dev.rec877.north.unsupportedMediaReason
 import dev.rec877.north.ui.theme.North
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -113,8 +114,10 @@ fun Composer(
     autoFocus: Boolean = false,
 ) {
     val c = North.colors
+    val context = LocalContext.current
     var text by rememberSaveable { mutableStateOf("") }
     var images by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var pickError by remember { mutableStateOf<String?>(null) }
     var restoredMediaIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var draftPickerOpen by remember { mutableStateOf(false) }
     var directPostApproved by rememberSaveable(text) { mutableStateOf(false) }
@@ -128,7 +131,9 @@ fun Composer(
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_MEDIA_ITEMS)
     ) { picked ->
-        val next = (images + picked).distinct().take(MAX_MEDIA_ITEMS)
+        val (ok, bad) = picked.partition { unsupportedMediaReason(context.contentResolver.getType(it)) == null }
+        pickError = bad.firstNotNullOfOrNull { unsupportedMediaReason(context.contentResolver.getType(it)) }
+        val next = (images + ok).distinct().take(MAX_MEDIA_ITEMS)
         images = next
         onDraftChanged(text, next)
     }
@@ -191,6 +196,8 @@ fun Composer(
                     }
                 }
             }
+
+            pickError?.let { Text(it, color = c.danger, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp).clickable { pickError = null }) }
 
             extra?.invoke()
 
@@ -290,10 +297,15 @@ fun FullScreenComposer(
     onSaveDraft: (String, List<Uri>, List<String>, () -> Unit) -> Unit,
     onSubmit: (text: String, images: List<Uri>, existingMediaIds: List<String>, poll: PollInput?, onDone: () -> Unit) -> Unit,
     onReportIssue: (String) -> Unit = {},
+    /** アップロード・投稿の失敗。投稿画面は別ウィンドウで背面のバナーが見えないため、ここに出す。 */
+    errorMessage: String? = null,
+    onDismissError: () -> Unit = {},
 ) {
     val c = North.colors
+    val context = LocalContext.current
     var text by rememberSaveable { mutableStateOf("") }
     var images by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var pickError by remember { mutableStateOf<String?>(null) }
     var restoredMediaIds by remember { mutableStateOf<List<String>>(emptyList()) }
     var draftPickerOpen by remember { mutableStateOf(false) }
     var confirmSaveOnClose by remember { mutableStateOf(false) }
@@ -306,8 +318,11 @@ fun FullScreenComposer(
     val focusRequester = remember { FocusRequester() }
     AutoFocus(enabled = true, focusRequester = focusRequester)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_MEDIA_ITEMS)) { picked ->
-        images = (images + picked).distinct().take(MAX_MEDIA_ITEMS)
+        val (ok, bad) = picked.partition { unsupportedMediaReason(context.contentResolver.getType(it)) == null }
+        pickError = bad.firstNotNullOfOrNull { unsupportedMediaReason(context.contentResolver.getType(it)) }
+        images = (images + ok).distinct().take(MAX_MEDIA_ITEMS)
     }
+    val shownError = pickError ?: errorMessage
     val weight = postWeight(text)
     val normalizedPoll = pollOptions?.map { it.trim() }
     val submittedOptions = normalizedPoll?.filter { it.isNotBlank() }
@@ -338,6 +353,14 @@ fun FullScreenComposer(
             ) { Text(if (posting) "送信中…" else "ポストする", color = c.textOnAccent, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp) }
         }
         HorizontalDivider(color = c.border)
+        shownError?.let { msg ->
+            Text(
+                msg, color = c.danger, fontSize = 14.sp,
+                modifier = Modifier.fillMaxWidth().background(c.elev2)
+                    .clickable { pickError = null; onDismissError() }
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
+            )
+        }
         if (hasDeveloperTag) {
             AppBugReportWarning(
                 text = text,
@@ -435,7 +458,7 @@ fun FullScreenComposer(
         containerColor = c.elev1,
         title = { Text("下書きを保存しますか？", color = c.text, fontWeight = FontWeight.ExtraBold) },
         text = { Text("投稿せずに閉じると、入力内容と添付を下書きへ保存できます。", color = c.textMuted) },
-        confirmButton = { TextButton(onClick = { onSaveDraft(text, images, restoredMediaIds) { confirmSaveOnClose = false; onClose() } }) { Text("保存して閉じる", color = c.accent, fontWeight = FontWeight.Bold) } },
+        confirmButton = { TextButton(onClick = { confirmSaveOnClose = false; onSaveDraft(text, images, restoredMediaIds) { onClose() } }) { Text("保存して閉じる", color = c.accent, fontWeight = FontWeight.Bold) } },
         dismissButton = { TextButton(onClick = { confirmSaveOnClose = false; onClose() }) { Text("保存しない", color = c.danger) } },
     )
 }

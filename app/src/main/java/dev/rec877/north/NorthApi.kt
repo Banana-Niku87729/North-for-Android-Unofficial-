@@ -43,6 +43,15 @@ private class ErrInfo(val code: Int?, val message: String?, val scopes: List<Str
 
 private const val MAX_UPLOAD_BYTES = 50L * 1024 * 1024
 private val SUPPORTED_VIDEO_TYPES = setOf("video/mp4", "video/quicktime", "video/webm")
+private val SUPPORTED_IMAGE_TYPES = setOf("image/jpeg", "image/png", "image/webp", "image/gif")
+
+/** 投稿に添付できない形式なら、利用者に見せる理由を返す。型が不明(null)の場合はサーバーの判断に任せる。 */
+fun unsupportedMediaReason(mime: String?): String? = when {
+    mime == null -> null
+    mime.startsWith("video/") -> if (mime in SUPPORTED_VIDEO_TYPES) null else "動画はMP4、MOV、WebM形式を選択してください"
+    mime.startsWith("image/") -> if (mime in SUPPORTED_IMAGE_TYPES) null else "この画像形式(${mime.removePrefix("image/")})は投稿できません。JPEG、PNG、WebP、GIFを選択してください"
+    else -> "画像または動画を選択してください"
+}
 
 /** Content URIを全量メモリへ展開せず、上限を確認しながらOkHttpへ流す。 */
 private class ContentUriRequestBody(
@@ -152,7 +161,7 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
     suspend fun dmConversations(requests: Boolean, cursor: String? = null): DmConversationPage =
         json.decodeFromString<Envelope<DmConversationPage>>(send("GET",
             "/2/dm/conversations?requests=$requests" +
-                (cursor?.let { "&cursor=" + URLEncoder.encode(it, "UTF-8") } ?: ""))).data
+                    (cursor?.let { "&cursor=" + URLEncoder.encode(it, "UTF-8") } ?: ""))).data
 
     suspend fun createDm(handle: String): DmConversation =
         json.decodeFromString<Envelope<DmConversation>>(send("POST", "/2/dm/conversations",
@@ -259,9 +268,7 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
     /** 画像または動画を1件アップロードして Media を返す（返ったidを createPost の mediaIds に渡す） */
     suspend fun uploadMedia(resolver: ContentResolver, uri: Uri, purpose: String = "posts"): Media {
         val mime = resolver.getType(uri) ?: "application/octet-stream"
-        if (mime.startsWith("video/") && mime !in SUPPORTED_VIDEO_TYPES) {
-            throw IOException("動画はMP4、MOV、WebM形式を選択してください")
-        }
+        unsupportedMediaReason(resolver.getType(uri))?.let { throw IOException(it) }
         var declaredLength = -1L
         val name = resolver.query(
             uri,

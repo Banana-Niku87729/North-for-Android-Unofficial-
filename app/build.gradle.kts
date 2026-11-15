@@ -33,7 +33,7 @@ android {
         targetSdk = 36
         versionCode = 1
         // CI ではタグから -PVERSION_NAME=1.2.3 を渡す。ローカルでは下の既定値。
-        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.1.5"
+        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.1.6"
 
         // x86 / x86_64 は実機でほぼ使われず、LiteRT のネイティブライブラリ分だけ APK が膨らむ。
         // splits ではなく abiFilters にしているのは、UpdateManager が Release の最初の .apk を取るため

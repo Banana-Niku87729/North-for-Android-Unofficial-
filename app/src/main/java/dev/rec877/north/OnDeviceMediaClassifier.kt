@@ -12,18 +12,30 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.tensorflow.lite.Interpreter
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.IOException
+import java.nio.channels.FileChannel
+import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.coroutines.coroutineContext
 
 enum class MediaVerdict { ALLOW, BLOCK, UNKNOWN }
 
-/** 推論は同梱モデルでのみ実行。画像・スコアを外部へ送信しない。 */
+/**
+ * 推論は端末内のモデルでのみ実行。画像・スコアを外部へ送信しない。
+ * モデル本体(約22.5MB)はAPKに同梱せず、初回の判定時に Config.NSFW_MODEL_URL から1度だけ取得して
+ * filesDir に保存する。SHA-256が一致しないファイルは破棄する。
+ */
 class OnDeviceMediaClassifier(private val context: Context) {
     private val mutex = Mutex()
     private val lock = Any()
     private var interpreter: Interpreter? = null
     private var closed = false
+    private val modelFile = File(context.filesDir, "care/nsfw.tflite")
+    private var lastDownloadFailureAt = 0L
 
     suspend fun classify(media: Media, client: OkHttpClient): MediaVerdict = withContext(Dispatchers.IO) {
         // 動画やアニメーションの先頭フレームだけで全体を許可しない。
@@ -31,6 +43,8 @@ class OnDeviceMediaClassifier(private val context: Context) {
         mutex.withLock {
             try {
                 coroutineContext.ensureActive()
+                // モデル未取得ならここで取得する。失敗時は閉じたまま(非表示)にして、しばらく再試行しない。
+                if (!ensureModel(client)) return@withLock MediaVerdict.UNKNOWN
                 val url = Config.absUrl(media.url) ?: return@withLock MediaVerdict.UNKNOWN
                 val bytes = client.newCall(Request.Builder().url(url).build()).execute().use { response ->
                     if (!response.isSuccessful) return@withLock MediaVerdict.UNKNOWN
@@ -70,15 +84,19 @@ class OnDeviceMediaClassifier(private val context: Context) {
 
     internal fun score(bitmap: Bitmap): Float = synchronized(lock) {
         check(!closed)
-        val model = interpreter ?: context.assets.open("care/nsfw.tflite").use { stream ->
-            val bytes = stream.readBytes()
-            val buffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder()).put(bytes)
-            buffer.rewind()
-            Interpreter(buffer, Interpreter.Options().setNumThreads(2)).also {
-                check(it.getInputTensor(0).shape().contentEquals(intArrayOf(1, 224, 224, 3)))
-                check(it.getOutputTensor(0).shape().contentEquals(intArrayOf(1, 2)))
-                interpreter = it
+        val model = interpreter ?: try {
+            FileInputStream(modelFile).use { stream ->
+                val buffer = stream.channel.map(FileChannel.MapMode.READ_ONLY, 0, modelFile.length())
+                Interpreter(buffer, Interpreter.Options().setNumThreads(2)).also {
+                    check(it.getInputTensor(0).shape().contentEquals(intArrayOf(1, 224, 224, 3)))
+                    check(it.getOutputTensor(0).shape().contentEquals(intArrayOf(1, 2)))
+                    interpreter = it
+                }
             }
+        } catch (e: Exception) {
+            // 壊れたモデルは削除し、次回の判定で取得し直す。
+            modelFile.delete()
+            throw e
         }
         val scaled = Bitmap.createScaledBitmap(bitmap, 224, 224, true)
         try {
@@ -97,10 +115,52 @@ class OnDeviceMediaClassifier(private val context: Context) {
         } finally { if (scaled !== bitmap) scaled.recycle() }
     }
 
+    /** モデルが端末内にあれば true。なければ取得して SHA-256 を検証し、原子的に配置する。 */
+    private suspend fun ensureModel(client: OkHttpClient): Boolean {
+        if (modelFile.isFile && modelFile.length() > 0) return true
+        if (System.currentTimeMillis() - lastDownloadFailureAt < RETRY_COOLDOWN_MS) return false
+        val part = File(modelFile.parentFile, "nsfw.tflite.part")
+        return try {
+            modelFile.parentFile?.mkdirs()
+            val http = client.newBuilder().callTimeout(5, TimeUnit.MINUTES).readTimeout(60, TimeUnit.SECONDS).build()
+            val digest = MessageDigest.getInstance("SHA-256")
+            http.newCall(Request.Builder().url(Config.NSFW_MODEL_URL).build()).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+                val body = response.body ?: throw IOException("empty body")
+                body.byteStream().use { input ->
+                    part.outputStream().use { out ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val n = input.read(buffer)
+                            if (n < 0) break
+                            total += n
+                            if (total > MODEL_MAX_BYTES) throw IOException("model too large")
+                            digest.update(buffer, 0, n)
+                            out.write(buffer, 0, n)
+                        }
+                    }
+                }
+            }
+            val actual = digest.digest().joinToString("") { "%02x".format(it) }
+            if (!actual.equals(Config.NSFW_MODEL_SHA256, ignoreCase = true)) throw IOException("model hash mismatch")
+            if (!part.renameTo(modelFile)) throw IOException("rename failed")
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) { part.delete(); throw e
+        } catch (_: Exception) {
+            part.delete()
+            lastDownloadFailureAt = System.currentTimeMillis()
+            false
+        }
+    }
+
     fun close() = synchronized(lock) { closed = true; interpreter?.close(); interpreter = null }
 
     companion object {
         private const val MAX_BYTES = 12 * 1024 * 1024
+        private const val MODEL_MAX_BYTES = 40L * 1024 * 1024
+        private const val RETRY_COOLDOWN_MS = 60_000L
         internal fun isAnimatedContainer(bytes: ByteArray): Boolean {
             if (bytes.size >= 3 && String(bytes, 0, 3, Charsets.US_ASCII) == "GIF") return true
             if (bytes.size >= 21 && String(bytes, 8, 4, Charsets.US_ASCII) == "WEBP" &&

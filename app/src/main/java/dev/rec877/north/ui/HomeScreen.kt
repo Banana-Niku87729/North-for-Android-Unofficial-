@@ -286,7 +286,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
                             vm.moveComposeButtonBy(drag.x / density.density, drag.y / density.density)
                         }
                     }
-                    .clickable(enabled = !vm.composeButtonCustomizationMode) { composerOpen = true },
+                    .clickable(enabled = !vm.composeButtonCustomizationMode) { vm.dismissMessage(); composerOpen = true },
                 contentAlignment = Alignment.Center,
             ) {
                 NorthIcon(NIcons.Edit, c.textOnAccent, 24.dp, modifier = Modifier.size(24.dp))
@@ -323,6 +323,8 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             onSaveDraft = { text, images, savedMediaIds, done -> vm.saveDraft(text, images, savedMediaIds, done) },
             onSubmit = { text, images, savedMediaIds, poll, done -> vm.post(text, images, poll = poll, existingMediaIds = savedMediaIds) { done(); composerOpen = false } },
             onReportIssue = vm::reportAppIssue,
+            errorMessage = ui.message,
+            onDismissError = vm::dismissMessage,
         )
     }
 

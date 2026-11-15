@@ -16,6 +16,14 @@ object Config {
     /** follows.write を追加（フォロー/解除）。変更後は一度ログアウト→再ログインが必要 */
     const val SCOPES = "posts.read users.read posts.write posts.delete reactions.write media.write notifications.read notifications.write follows.write drafts.read drafts.write trends.read profile.write bookmarks.read bookmarks.write lists.read lists.write"
 
+    /**
+     * 端末内判定モデル(nsfw.tflite, 約22.5MB)。APKには同梱せず、初回の判定時にここから取得する。
+     * リビジョン固定のURLなので内容は変わらない。自前のReleaseなどへ置く場合はURLだけ差し替え、
+     * SHA-256はそのままでよい(一致しなければ破棄して使わない)。
+     */
+    const val NSFW_MODEL_URL = "https://raw.githubusercontent.com/hoyaaaa/nsfw_detector_flutter/77f6c72397113c7facb7ba4783ccfe70caec7c81/assets/nsfw.tflite"
+    const val NSFW_MODEL_SHA256 = "a476ef325f4f776602d944fd28133e945f77a74e37dafba37936110b35b7810d"
+
     /** 相対URL（/media/... など）はAPIホスト基準で解決する */
     fun absUrl(u: String?): String? = when {
         u.isNullOrBlank() -> null
