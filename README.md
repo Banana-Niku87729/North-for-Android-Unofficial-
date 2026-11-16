@@ -4,9 +4,9 @@
 <br/>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="log_wh.png">
-  <source media="(prefers-color-scheme: light)" srcset="log_bl.png">
-  <img src="log_wh.png" alt="north Android Client app icon" width="200" />
+  <source media="(prefers-color-scheme: dark)" srcset="./log_wh.png">
+  <source media="(prefers-color-scheme: light)" srcset="./log_bl.png">
+  <img alt="north Android Client app icon" src="./log_bl.png" width="200">
 </picture>
 
 # north Android
