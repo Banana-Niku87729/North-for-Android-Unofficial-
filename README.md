@@ -16,7 +16,6 @@
 
 ***
 
-## App Preview
 <p>
   <img src="./north_tm_1.png" width="300">
   <img src="./north_tm_2.png" width="300">
