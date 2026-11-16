@@ -14,7 +14,7 @@
 [![Latest release](https://img.shields.io/github/v/release/banana-niku87729/North-for-Android-Unofficial-?style=for-the-badge&labelColor=0d1117)](https://github.com/banana-niku87729/North-for-Android-Unofficial-/releases)
 [![LICENSE](https://img.shields.io/badge/LICENSE-MIT-orange?style=for-the-badge)](<https://rec877.com/s/lmao>)
 
-## App Preview
+***
 
 <p>
   <img src="./north_tm_1.png" width="300">
