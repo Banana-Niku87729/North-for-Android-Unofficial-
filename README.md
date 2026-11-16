@@ -3,7 +3,7 @@
 <br/>
 <br/>
 
-![](./log_wh.png#gh-dark-mode-only)![](./log_bl.png#gh-light-mode-only)
+<img src="./log_wh.png#gh-dark-mode-only" width="200"><img src="./log_bl.png#gh-light-mode-only" width="200">
 
 # north Android
 
