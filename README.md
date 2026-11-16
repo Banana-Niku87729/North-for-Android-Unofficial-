@@ -4,6 +4,7 @@
 <br/>
 
 <img src="./log_wh.png#gh-dark-mode-only" width="200"><img src="./log_bl.png#gh-light-mode-only" width="200">
+###### Special Thanks to [North(north.rip)](https://north.rip/)
 
 # north Android
 
