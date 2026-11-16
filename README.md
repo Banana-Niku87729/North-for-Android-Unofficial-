@@ -15,5 +15,6 @@
 [![LICENSE](https://img.shields.io/badge/LICENSE-MIT-orange?style=for-the-badge)](<https://rec877.com/s/lmao>)
 
 <p>
-
+  <img src="./north_tm_1.png" width="300">
+  <img src="./north_tm_2.png" width="300">
 </p>
