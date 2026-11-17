@@ -24,5 +24,3 @@
   <img src="./north_tm_4.png" width="18%">
   <img src="./north_tm_5.png" width="18%">
 </p>
-
-##### コードはMITです。クレジット表記はお願いします
