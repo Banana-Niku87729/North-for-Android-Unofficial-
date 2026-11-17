@@ -25,7 +25,14 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -62,7 +69,9 @@ import dev.rec877.north.Post
 import dev.rec877.north.PostPage
 import dev.rec877.north.ScreenController
 import dev.rec877.north.User
+import dev.rec877.north.shownBadges
 import dev.rec877.north.patched
+import dev.rec877.north.withAuthorPatched
 import dev.rec877.north.withoutDeleted
 import dev.rec877.north.ui.theme.North
 
@@ -100,6 +109,7 @@ class PagedPosts(private val fetch: suspend (String?) -> PostPage) {
 
     fun patch(id: String, f: (Post) -> Post) { items = items.map { it.patched(id, f) } }
     fun remove(id: String) { items = items.mapNotNull { it.withoutDeleted(id) } }
+    fun patchUser(userId: String, f: (User) -> User) { items = items.map { it.withAuthorPatched(userId, f) } }
 }
 
 /** プロフィール画面の状態。戻ってきたとき、読み込み済みの中身とスクロール位置が残る */
@@ -185,6 +195,12 @@ class ProfileController(private val vm: MainViewModel, val handle: String) : Scr
     }
 
     override fun onReplyPosted() {}
+
+    override fun patchUser(userId: String, f: (User) -> User) {
+        user = user?.let { if (it.id == userId) f(it) else it }
+        posts.patchUser(userId, f)
+        likes.patchUser(userId, f)
+    }
 }
 
 @Composable
@@ -194,6 +210,7 @@ fun ProfileScreen(
     handle: String,
     actions: PostActions,
     onSearchPosts: (String) -> Unit,
+    onOpenDm: (String) -> Unit = {},
 ) {
     val c = North.colors
     val ctl = vm.screen("user:$handle") { ProfileController(vm, handle) }
@@ -242,6 +259,10 @@ fun ProfileScreen(
                             onOpenFollows = { kind -> vm.open(Dest.follows(user.handle, kind)) },
                             onOpenMedia = { media -> actions.onOpenMedia(listOf(media), 0) },
                             onEdit = { editing = true },
+                            onOpenDm = { onOpenDm(user.handle) },
+                            onManageLists = { actions.onManageLists(user) },
+                            onSetMuted = { on -> actions.onMute(user, on) },
+                            onSetBlocked = { on -> actions.onBlock(user, on) },
                         )
                     }
                     item(key = "tabs") { NorthTabs(listOf("ポスト", "いいね"), ctl.tab) { ctl.selectTab(it) } }
@@ -309,9 +330,16 @@ private fun ProfileHeader(
     onOpenFollows: (String) -> Unit,
     onOpenMedia: (Media) -> Unit,
     onEdit: () -> Unit,
+    onOpenDm: () -> Unit,
+    onManageLists: () -> Unit,
+    onSetMuted: (Boolean) -> Unit,
+    onSetBlocked: (Boolean) -> Unit,
 ) {
     val c = North.colors
     val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+    var menuOpen by remember { mutableStateOf(false) }
+    var confirmBlock by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth()) {
         // ヘッダー画像（3:1）。無いときはアクセント系の無地
@@ -356,34 +384,43 @@ private fun ProfileHeader(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (following) {
-                        Box(
-                            Modifier
-                                .height(34.dp)
-                                .clip(CircleShape)
-                                .border(1.dp, if (postNotificationsEnabled) c.accent else c.borderStrong, CircleShape)
-                                .clickable(onClick = onTogglePostNotifications)
-                                .padding(horizontal = 12.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            ) {
-                                NorthIcon(
-                                    NIcons.Bell,
-                                    if (postNotificationsEnabled) c.accent else c.text,
-                                    16.dp,
-                                    modifier = Modifier.size(16.dp),
-                                )
-                                Text(
-                                    if (postNotificationsEnabled) "新着通知オン" else "新着を受け取る",
-                                    color = if (postNotificationsEnabled) c.accent else c.text,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                )
-                            }
+                    // 「…」メニュー（リスト・リンクコピー・ミュート・ブロック）
+                    Box {
+                        ProfileIconButton(NIcons.More, c.text, c.borderStrong, "その他") { menuOpen = true }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = c.elev1) {
+                            DropdownMenuItem(
+                                text = { Text("リストへの追加/削除", color = c.text) },
+                                onClick = { menuOpen = false; onManageLists() },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("プロフィールへのリンクをコピー", color = c.text) },
+                                onClick = {
+                                    menuOpen = false
+                                    val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("north のプロフィール", "https://north.rip/${user.handle}"))
+                                    android.widget.Toast.makeText(context, "リンクをコピーしました", android.widget.Toast.LENGTH_SHORT).show()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (user.muting) "@${user.handle} さんのミュートを解除" else "@${user.handle} さんをミュート", color = c.text) },
+                                onClick = { menuOpen = false; onSetMuted(!user.muting) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (user.blocking) "@${user.handle} さんのブロックを解除" else "@${user.handle} さんをブロック", color = c.danger) },
+                                onClick = { menuOpen = false; if (user.blocking) onSetBlocked(false) else confirmBlock = true },
+                            )
                         }
+                    }
+                    // 文字は付けず、メッセージ・ベルのアイコンだけにして、フォローボタンを押し出さないようにする
+                    ProfileIconButton(NIcons.Message, c.text, c.borderStrong, "メッセージを送る", onOpenDm)
+                    if (following) {
+                        ProfileIconButton(
+                            NIcons.Bell,
+                            if (postNotificationsEnabled) c.accent else c.text,
+                            if (postNotificationsEnabled) c.accent else c.borderStrong,
+                            if (postNotificationsEnabled) "新着ポストの通知をオフにする" else "新着ポストの通知をオンにする",
+                            onTogglePostNotifications,
+                        )
                     }
                     Box(
                         Modifier
@@ -428,6 +465,8 @@ private fun ProfileHeader(
                 }
             }
 
+            ProfileBadgeRow(user.shownBadges(), isSelf)
+
             if (!user.bio.isNullOrBlank()) {
                 Text(user.bio, color = c.text, fontSize = 15.sp, lineHeight = 21.sp, modifier = Modifier.padding(top = 12.dp))
             }
@@ -460,20 +499,47 @@ private fun ProfileHeader(
                     Triple(user.followerCount, "フォロワー", "followers"),
                     Triple(user.tweetCount, "ポスト", null),
                 ).forEach { (n, label, destination) ->
-                        Text(
-                            buildAnnotatedString {
-                                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = c.text)) { append(n.toString()) }
-                                append(" $label")
-                            },
-                            color = c.textMuted,
-                            fontSize = 14.sp,
-                            modifier = if (destination != null) Modifier.clickable { onOpenFollows(destination) } else Modifier,
-                        )
-                    }
+                    Text(
+                        buildAnnotatedString {
+                            withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = c.text)) { append(n.toString()) }
+                            append(" $label")
+                        },
+                        color = c.textMuted,
+                        fontSize = 14.sp,
+                        modifier = if (destination != null) Modifier.clickable { onOpenFollows(destination) } else Modifier,
+                    )
+                }
             }
         }
     }
 
+    if (confirmBlock) {
+        AlertDialog(
+            onDismissRequest = { confirmBlock = false },
+            containerColor = c.elev1,
+            title = { Text("ブロックしますか？", color = c.text, fontWeight = FontWeight.ExtraBold) },
+            text = { Text("@${user.handle} さんをブロックすると、お互いのフォローが解除され、ポストが表示されなくなります。", color = c.textMuted) },
+            confirmButton = {
+                TextButton(onClick = { confirmBlock = false; onSetBlocked(true) }) {
+                    Text("ブロックする", color = c.danger, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text("キャンセル", color = c.textMuted) } },
+        )
+    }
+}
+
+@Composable
+private fun ProfileIconButton(icon: NIcon, tint: Color, borderColor: Color, description: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(34.dp)
+            .clip(CircleShape)
+            .border(1.dp, borderColor, CircleShape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) { NorthIcon(icon, tint, 17.dp, modifier = Modifier.size(17.dp)) }
 }
 
 @Composable

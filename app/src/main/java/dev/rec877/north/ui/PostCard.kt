@@ -13,7 +13,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
@@ -57,14 +59,16 @@ import dev.rec877.north.Config
 import dev.rec877.north.Media
 import dev.rec877.north.BookmarkFolder
 import dev.rec877.north.Poll
+import dev.rec877.north.PollOption
 import dev.rec877.north.Post
 import dev.rec877.north.User
+import dev.rec877.north.shownBadges
 import dev.rec877.north.R
 import dev.rec877.north.ui.theme.North
 import okhttp3.OkHttpClient
 
 /** ホーム・検索・詳細・プロフィールで共有する、ポストへの操作 */
-class PostActions(
+data class PostActions(
     val onReply: (Post) -> Unit,
     val onLike: (Post) -> Unit,
     val onRepost: (Post) -> Unit,
@@ -83,6 +87,17 @@ class PostActions(
     val onUnpin: (Post) -> Unit = {},
     val onSetReplyPolicy: (Post, String) -> Unit = { _, _ -> },
     val onDelete: (Post) -> Unit = {},
+    /** 本文中の #ハッシュタグ（先頭の # を含む）。検索へ移る */
+    val onOpenHashtag: (String) -> Unit = {},
+    /** 投票（選択肢をタップ） */
+    val onVote: (Post, PollOption) -> Unit = { _, _ -> },
+    /** 自分のポストを編集 */
+    val onEdit: (Post) -> Unit = {},
+    /** 「リストへの追加/削除」ダイアログを開く */
+    val onManageLists: (User) -> Unit = {},
+    val onUnfollow: (User) -> Unit = {},
+    val onMute: (User, Boolean) -> Unit = { _, _ -> },
+    val onBlock: (User, Boolean) -> Unit = { _, _ -> },
 )
 
 @Composable
@@ -214,6 +229,7 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions, pinned: Bool
                             onOpenMention = actions.onOpenMention,
                             onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
                             onOpenPost = { actions.onOpenPost(shown) },
+                            onOpenHashtag = actions.onOpenHashtag,
                         )
                         LinkCards(
                             text = shown.text,
@@ -228,7 +244,7 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions, pinned: Bool
                             httpClient = actions.mediaHttpClient,
                         )
                     }
-                    shown.poll?.let { PollCard(it) }
+                    shown.poll?.let { PollCard(shown, it, actions.onVote) }
                     shown.quoted?.let { QuotedPost(it, loader, actions) }
                 }
 
@@ -287,6 +303,7 @@ fun PostMoreButton(post: Post, actions: PostActions) {
     val c = North.colors
     val context = LocalContext.current
     val isMine = actions.currentUserId() == post.author.id
+    val author = post.author
     var expanded by remember { mutableStateOf(false) }
     var confirmation by remember { mutableStateOf<String?>(null) }
 
@@ -307,6 +324,10 @@ fun PostMoreButton(post: Post, actions: PostActions) {
                     text = { Text(if (post.pinned) "固定を解除" else "プロフィールに固定", color = c.text) },
                     onClick = { expanded = false; confirmation = if (post.pinned) "unpin" else "pin" },
                 )
+                DropdownMenuItem(
+                    text = { Text("ポストを編集", color = c.text) },
+                    onClick = { expanded = false; actions.onEdit(post) },
+                )
                 val followingOnly = post.replyPolicy == "FOLLOWING"
                 DropdownMenuItem(
                     text = { Text(if (followingOnly) "返信を全員に開放" else "返信をフォロー中のみに制限", color = c.text) },
@@ -314,6 +335,30 @@ fun PostMoreButton(post: Post, actions: PostActions) {
                         expanded = false
                         actions.onSetReplyPolicy(post, if (followingOnly) "EVERYONE" else "FOLLOWING")
                     },
+                )
+            } else if (author.id.isNotBlank()) {
+                if (author.following) {
+                    DropdownMenuItem(
+                        text = { Text("@${author.handle} さんのフォローを解除", color = c.text) },
+                        onClick = { expanded = false; confirmation = "unfollow" },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("リストへの追加/削除", color = c.text) },
+                    onClick = { expanded = false; actions.onManageLists(author) },
+                )
+                DropdownMenuItem(
+                    text = { Text(if (author.muting) "@${author.handle} さんのミュートを解除" else "@${author.handle} さんをミュート", color = c.text) },
+                    onClick = { expanded = false; actions.onMute(author, !author.muting) },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (author.blocking) "@${author.handle} さんのブロックを解除" else "@${author.handle} さんをブロック",
+                            color = c.danger,
+                        )
+                    },
+                    onClick = { expanded = false; if (author.blocking) actions.onBlock(author, false) else confirmation = "block" },
                 )
             }
             DropdownMenuItem(
@@ -333,8 +378,11 @@ fun PostMoreButton(post: Post, actions: PostActions) {
         val (title, description, confirmLabel) = when (action) {
             "pin" -> Triple("ポストを固定しますか？", "このポストをプロフィールの先頭に表示します。", "固定する")
             "unpin" -> Triple("固定を解除しますか？", "このポストをプロフィールの先頭から外します。", "固定解除")
+            "unfollow" -> Triple("フォローを解除しますか？", "@${author.handle} さんのフォローを解除します。", "フォロー解除")
+            "block" -> Triple("ブロックしますか？", "@${author.handle} さんをブロックすると、お互いのフォローが解除され、ポストが表示されなくなります。", "ブロックする")
             else -> Triple("ポストを削除しますか？", "この操作は取り消せません。", "削除する")
         }
+        val danger = action == "delete" || action == "block"
         AlertDialog(
             onDismissRequest = { confirmation = null },
             containerColor = c.elev1,
@@ -346,9 +394,11 @@ fun PostMoreButton(post: Post, actions: PostActions) {
                     when (action) {
                         "pin" -> actions.onPin(post)
                         "unpin" -> actions.onUnpin(post)
+                        "unfollow" -> actions.onUnfollow(author)
+                        "block" -> actions.onBlock(author, true)
                         else -> actions.onDelete(post)
                     }
-                }) { Text(confirmLabel, color = if (action == "delete") c.danger else c.accent, fontWeight = FontWeight.Bold) }
+                }) { Text(confirmLabel, color = if (danger) c.danger else c.accent, fontWeight = FontWeight.Bold) }
             },
             dismissButton = { TextButton(onClick = { confirmation = null }) { Text("キャンセル", color = c.textMuted) } },
         )
@@ -365,10 +415,95 @@ private fun copyPostLink(context: Context, post: Post) {
 
 private const val MENTION_TAG = "mention"
 private const val URL_TAG = "url"
-private val richTextPattern = Regex("""<色=\"#[0-9A-Fa-f]{6}\">|</色>|<太字>|</太字>|<斜体>|</斜体>|https?://[^\s]+|@[A-Za-z0-9_]+""")
+private const val HASHTAG_TAG = "hashtag"
+
+/**
+ * 本文の装飾タグとリンク。
+ * 色: Webの <color=#RRGGBB>…</color>（"#…" の引用符つき・3桁も可）と、従来の <色="#RRGGBB">…</色>
+ * 太字・斜体: <太字> <斜体>（<b> <i> も可）
+ * リンク: URL / @メンション / #ハッシュタグ
+ */
+private val richTextPattern = Regex(
+    """<\s*(?:color|colour|色)\s*=\s*["']?#?(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})["']?\s*>""" +
+            """|<\s*/\s*(?:color|colour|色)\s*>|<太字>|</太字>|<斜体>|</斜体>|</?[bi]>""" +
+            """|https?://[^\s]+|@[A-Za-z0-9_]+|(?<![\p{L}\p{N}_&/])#[\p{L}\p{N}\p{M}_]+""",
+    RegexOption.IGNORE_CASE,
+)
+private val colorOpenPattern = Regex("""^<\s*(?:color|colour|色)\s*=""", RegexOption.IGNORE_CASE)
+private val colorClosePattern = Regex("""^<\s*/\s*(?:color|colour|色)\s*>$""", RegexOption.IGNORE_CASE)
+private val hexInTagPattern = Regex("""#?([0-9A-Fa-f]{8}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3})""")
 private val urlPattern = Regex("""https?://[^\s]+""")
 
-/** URLとメンションは各対象を開き、それ以外の本文タップはポスト詳細へ渡す。 */
+private fun parseTagColor(tag: String): Color? {
+    val hex = hexInTagPattern.find(tag.substringAfter('='))?.groupValues?.get(1) ?: return null
+    val full = if (hex.length == 3) hex.map { "$it$it" }.joinToString("") else hex.take(6)
+    val value = full.toLongOrNull(16) ?: return null
+    return Color(
+        red = ((value shr 16) and 0xFF).toFloat() / 255f,
+        green = ((value shr 8) and 0xFF).toFloat() / 255f,
+        blue = (value and 0xFF).toFloat() / 255f,
+    )
+}
+
+/** 全数字の #123 はハッシュタグとして扱わない */
+private fun isHashtag(raw: String): Boolean = raw.length > 1 && raw.drop(1).any { !it.isDigit() }
+
+/**
+ * 装飾タグ・リンクを反映した本文。ポスト本文・引用・通知の抜粋など、本文を出すすべての場所で共通に使う
+ * （色指定がある場所とない場所が混ざらないようにする）。
+ */
+fun richAnnotatedString(text: String, linkColor: Color): AnnotatedString = buildAnnotatedString {
+    var cursor = 0
+    val styleTags = mutableListOf<String>()
+    richTextPattern.findAll(text).forEach { match ->
+        append(text.substring(cursor, match.range.first))
+        val raw = match.value
+        val lower = raw.lowercase()
+        when {
+            colorOpenPattern.containsMatchIn(raw) -> {
+                val color = parseTagColor(raw)
+                if (color == null) append(raw) else {
+                    pushStyle(SpanStyle(color = color))
+                    styleTags += "color"
+                }
+            }
+            lower == "<太字>" || lower == "<b>" -> {
+                pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
+                styleTags += "bold"
+            }
+            lower == "<斜体>" || lower == "<i>" -> {
+                pushStyle(SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic))
+                styleTags += "italic"
+            }
+            colorClosePattern.matches(raw) || lower == "</太字>" || lower == "</斜体>" || lower == "</b>" || lower == "</i>" -> {
+                val tag = when {
+                    colorClosePattern.matches(raw) -> "color"
+                    lower == "</太字>" || lower == "</b>" -> "bold"
+                    else -> "italic"
+                }
+                if (styleTags.lastOrNull() == tag) {
+                    pop()
+                    styleTags.removeAt(styleTags.lastIndex)
+                } else append(raw)
+            }
+            raw.startsWith("#") && !isHashtag(raw) -> append(raw)
+            else -> {
+                val isUrl = raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)
+                val isTag = raw.startsWith("#")
+                // 文末の句読点はURLに含めない。表示上は元の本文を欠かさず残す。
+                val target = if (isUrl) raw.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') else raw
+                val start = length
+                withStyle(SpanStyle(color = linkColor)) { append(target) }
+                addStringAnnotation(if (isUrl) URL_TAG else if (isTag) HASHTAG_TAG else MENTION_TAG, target, start, length)
+                append(raw.removePrefix(target))
+            }
+        }
+        cursor = match.range.last + 1
+    }
+    append(text.substring(cursor))
+}
+
+/** URL・メンション・ハッシュタグは各対象を開き、それ以外の本文タップはポスト詳細へ渡す。 */
 @Composable
 fun RichPostText(
     text: String,
@@ -378,60 +513,10 @@ fun RichPostText(
     fontSize: TextUnit = 16.sp,
     lineHeight: TextUnit = 22.sp,
     modifier: Modifier = Modifier,
+    onOpenHashtag: (String) -> Unit = {},
 ) {
     val c = North.colors
-    val annotated = remember(text, c.accent) {
-        buildAnnotatedString {
-            var cursor = 0
-            val styleTags = mutableListOf<String>()
-            richTextPattern.findAll(text).forEach { match ->
-                append(text.substring(cursor, match.range.first))
-                val raw = match.value
-                when {
-                    raw.startsWith("<色=") -> {
-                        val hex = raw.substringAfter('"').substringBefore('"')
-                        val color = hex.removePrefix("#").toLongOrNull(16)?.let { value ->
-                            Color(
-                                red = ((value shr 16) and 0xFF).toFloat() / 255f,
-                                green = ((value shr 8) and 0xFF).toFloat() / 255f,
-                                blue = (value and 0xFF).toFloat() / 255f,
-                            )
-                        }
-                        if (color == null) append(raw) else {
-                            pushStyle(SpanStyle(color = color))
-                            styleTags += "色"
-                        }
-                    }
-                    raw == "<太字>" -> {
-                        pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-                        styleTags += "太字"
-                    }
-                    raw == "<斜体>" -> {
-                        pushStyle(SpanStyle(fontStyle = androidx.compose.ui.text.font.FontStyle.Italic))
-                        styleTags += "斜体"
-                    }
-                    raw == "</色>" || raw == "</太字>" || raw == "</斜体>" -> {
-                        val tag = raw.removePrefix("</").removeSuffix(">")
-                        if (styleTags.lastOrNull() == tag) {
-                            pop()
-                            styleTags.removeAt(styleTags.lastIndex)
-                        } else append(raw)
-                    }
-                    else -> {
-                        val isUrl = raw.startsWith("http://") || raw.startsWith("https://")
-                        // 文末の句読点はURLに含めない。表示上は元の本文を欠かさず残す。
-                        val target = if (isUrl) raw.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') else raw
-                        val start = length
-                        withStyle(SpanStyle(color = c.accent)) { append(target) }
-                        addStringAnnotation(if (isUrl) URL_TAG else MENTION_TAG, target, start, length)
-                        append(raw.removePrefix(target))
-                    }
-                }
-                cursor = match.range.last + 1
-            }
-            append(text.substring(cursor))
-        }
-    }
+    val annotated = remember(text, c.accent) { richAnnotatedString(text, c.accent) }
     ClickableText(
         text = annotated,
         style = TextStyle(color = c.text, fontSize = fontSize, lineHeight = lineHeight),
@@ -441,6 +526,7 @@ fun RichPostText(
             when (annotation?.tag) {
                 MENTION_TAG -> onOpenMention(annotation.item.removePrefix("@"))
                 URL_TAG -> onOpenUrl(annotation.item)
+                HASHTAG_TAG -> onOpenHashtag(annotation.item)
                 else -> onOpenPost()
             }
         },
@@ -508,18 +594,48 @@ fun BookmarkFolderPicker(folders: List<BookmarkFolder>, onDismiss: () -> Unit, o
     )
 }
 
-/** 投票の選択肢と集計。投票操作APIは別途用意されるまで、結果の閲覧表示に留める。 */
+/**
+ * 投票。未投票・受付中は選択肢をタップして投票し、投票後と終了後は集計（割合バー）を表示する。
+ * 投票には polls.vote の権限が必要（権限不足のときは「再ログイン」を案内するエラーが出る）。
+ */
 @Composable
-fun PollCard(poll: Poll) {
+fun PollCard(post: Post, poll: Poll, onVote: (Post, PollOption) -> Unit) {
     val c = North.colors
     val shape = RoundedCornerShape(12.dp)
-    Column(Modifier.padding(top = 10.dp).fillMaxWidth().clip(shape).border(1.dp, c.border, shape).padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+    val canVote = !poll.ended && poll.viewerOptionId == null
+    val total = poll.totalVotes.coerceAtLeast(poll.options.sumOf { it.voteCount })
+    Column(Modifier.padding(top = 10.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
         poll.options.sortedBy { it.position }.forEach { option ->
             val selected = option.id == poll.viewerOptionId
-            val suffix = option.percent?.let { " ${it.toInt()}%" }.orEmpty()
-            Text("${if (selected) "✓ " else ""}${option.label}$suffix", color = if (selected) c.accent else c.text, fontSize = 14.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+            if (canVote) {
+                Box(
+                    Modifier.fillMaxWidth().clip(shape).border(1.dp, c.accent, shape)
+                        .clickable(role = Role.Button) { onVote(post, option) }.padding(horizontal = 14.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) { Text(option.label, color = c.accent, fontSize = 15.sp, fontWeight = FontWeight.Bold) }
+            } else {
+                val percent = option.percent ?: if (total > 0) option.voteCount * 100.0 / total else 0.0
+                Box(Modifier.fillMaxWidth().height(38.dp).clip(shape).border(1.dp, c.border, shape)) {
+                    Box(
+                        Modifier.fillMaxHeight().fillMaxWidth((percent / 100.0).toFloat().coerceIn(0f, 1f))
+                            .background(if (selected) c.accent.copy(alpha = 0.35f) else c.elev3)
+                    )
+                    Row(Modifier.fillMaxSize().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            (if (selected) "✓ " else "") + option.label,
+                            color = c.text, fontSize = 14.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+                        )
+                        Text("${percent.toInt()}%", color = c.text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
-        Text("${poll.totalVotes} 件の投票${if (poll.ended) "・終了" else ""}", color = c.textMuted, fontSize = 12.sp)
+        Text(
+            "$total 件の投票・" + (if (poll.ended) "終了" else pollRemaining(poll.endsAt)),
+            color = c.textMuted, fontSize = 12.sp,
+        )
     }
 }
 
@@ -529,6 +645,10 @@ fun UserBadges(user: User, compact: Boolean = true) {
     val c = North.colors
     if (user.verified) {
         androidx.compose.foundation.Image(painterResource(R.drawable.ic_verified), "認証済み", Modifier.padding(start = 4.dp).size(if (compact) 15.dp else 18.dp), colorFilter = ColorFilter.tint(c.accent))
+    }
+    // ポスト一覧などの名前の横には、実績バッジを小さく並べる（プロフィールは専用の行に出す）
+    if (compact) user.shownBadges().forEach { b ->
+        dev.rec877.north.badgeDef(b.key)?.let { BadgeIcon(it, 15.dp, Modifier.padding(start = 3.dp)) }
     }
     if (user.isProtected) androidx.compose.foundation.Image(painterResource(R.drawable.ic_locked), "非公開アカウント", Modifier.padding(start = 3.dp).size(if (compact) 14.dp else 17.dp), colorFilter = ColorFilter.tint(c.text))
 }
@@ -572,7 +692,7 @@ fun QuotedPost(q: Post, loader: ImageLoader, actions: PostActions) {
         } else {
             if (q.text.isNotEmpty()) {
                 Text(
-                    q.text,
+                    remember(q.text, c.accent) { richAnnotatedString(q.text, c.accent) },
                     color = c.text,
                     fontSize = 15.sp,
                     lineHeight = 20.sp,

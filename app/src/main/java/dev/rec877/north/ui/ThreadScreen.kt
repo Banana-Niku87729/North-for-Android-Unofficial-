@@ -1,6 +1,14 @@
 package dev.rec877.north.ui
 
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.layout.width
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,6 +60,10 @@ import coil3.ImageLoader
 import dev.rec877.north.MainViewModel
 import dev.rec877.north.Post
 import dev.rec877.north.ScreenController
+import dev.rec877.north.User
+import dev.rec877.north.unsupportedMediaReason
+import dev.rec877.north.withAuthorPatched
+import dev.rec877.north.withoutAuthor
 import dev.rec877.north.patched
 import dev.rec877.north.withoutDeleted
 import dev.rec877.north.ui.theme.North
@@ -68,6 +80,9 @@ class ThreadController(private val vm: MainViewModel, val postId: String) : Scre
 
     /** 下の入力欄の書きかけ */
     var draft by mutableStateOf("")
+
+    /** 返信に添付する画像・動画（最大4件） */
+    var images by mutableStateOf<List<Uri>>(emptyList())
 
     /** 返信先。null のときは、この画面の本人のポストへの返信 */
     var replyTarget by mutableStateOf<Post?>(null)
@@ -125,6 +140,17 @@ class ThreadController(private val vm: MainViewModel, val postId: String) : Scre
     override fun onReplyPosted() {
         if (main != null) load()
     }
+
+    override fun patchUser(userId: String, f: (User) -> User) {
+        ancestors = ancestors.map { it.withAuthorPatched(userId, f) }
+        main = main?.withAuthorPatched(userId, f)
+        replies = replies.map { it.withAuthorPatched(userId, f) }
+    }
+
+    override fun removeAuthor(userId: String) {
+        ancestors = ancestors.mapNotNull { it.withoutAuthor(userId) }
+        replies = replies.mapNotNull { it.withoutAuthor(userId) }
+    }
 }
 
 @Composable
@@ -159,28 +185,12 @@ fun ThreadScreen(vm: MainViewModel, loader: ImageLoader, postId: String, actions
     // この画面の中では、返信ボタンはポップアップではなく下の入力欄に切り替える（返信先を選べる）
     val mainId = (main?.retweetOf ?: main)?.id
     val threadActions = remember(actions, ctl, focusRequester, keyboard, mainId) {
-        PostActions(
+        actions.copy(
             onReply = { target ->
                 ctl.replyTarget = if (target.id == mainId) null else target
                 runCatching { focusRequester.requestFocus() }
                 keyboard?.show()
             },
-            onLike = actions.onLike,
-            onRepost = actions.onRepost,
-            onBookmark = actions.onBookmark,
-            bookmarkFolders = actions.bookmarkFolders,
-            onLoadBookmarkFolders = actions.onLoadBookmarkFolders,
-            onAddToBookmarkFolder = actions.onAddToBookmarkFolder,
-            onOpenMedia = actions.onOpenMedia,
-            onOpenPost = actions.onOpenPost,
-            onOpenUser = actions.onOpenUser,
-            mediaHttpClient = actions.mediaHttpClient,
-            onOpenMention = actions.onOpenMention,
-            currentUserId = actions.currentUserId,
-            onPin = actions.onPin,
-            onUnpin = actions.onUnpin,
-            onSetReplyPolicy = actions.onSetReplyPolicy,
-            onDelete = actions.onDelete,
         )
     }
 
@@ -265,10 +275,38 @@ private fun ReplyBar(
     val target = ctl.replyTarget ?: shown
     val weight = postWeight(ctl.draft)
     val posting = vm.ui.posting
-    val canSend = !posting && ctl.draft.isNotBlank() && weight <= 280
+    val canSend = !posting && (ctl.draft.isNotBlank() || ctl.images.isNotEmpty()) && weight <= 280
+    val context = LocalContext.current
+    var pickError by remember { mutableStateOf<String?>(null) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { picked ->
+        val (ok, bad) = picked.partition { unsupportedMediaReason(context.contentResolver.getType(it)) == null }
+        pickError = bad.firstNotNullOfOrNull { unsupportedMediaReason(context.contentResolver.getType(it)) }
+        ctl.images = (ctl.images + ok).distinct().take(4)
+    }
 
     Column(Modifier.fillMaxWidth().background(c.bg)) {
         HorizontalDivider(color = c.border)
+
+        if (ctl.images.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ctl.images.forEach { uri ->
+                    Box(Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)).background(c.elev2)) {
+                        SelectedMediaThumbnail(uri, loader, Modifier.fillMaxSize())
+                        Box(
+                            Modifier.align(Alignment.TopEnd).padding(3.dp).size(22.dp).clip(CircleShape)
+                                .background(Color(0xAA000000)).clickable { ctl.images = ctl.images - uri },
+                            contentAlignment = Alignment.Center,
+                        ) { NorthIcon(NIcons.Close, Color.White, 12.dp, modifier = Modifier.size(12.dp)) }
+                    }
+                }
+            }
+        }
+        pickError?.let {
+            Text(it, color = c.danger, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).clickable { pickError = null })
+        }
 
         if (target.id != shown.id) {
             Row(
@@ -295,6 +333,16 @@ private fun ReplyBar(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             vm.ui.me?.let { Avatar(it, 32.dp, loader, Modifier.padding(bottom = 4.dp)) }
+
+            // 返信にも画像・動画を添付できる（フォトピッカー・合計4件まで）
+            val canAdd = !posting && ctl.images.size < 4
+            Box(
+                Modifier.padding(bottom = 2.dp).size(36.dp).clip(CircleShape).alpha(if (canAdd) 1f else 0.4f)
+                    .clickable(enabled = canAdd) {
+                        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                    },
+                contentAlignment = Alignment.Center,
+            ) { NorthIcon(NIcons.Image, c.accent, 22.dp, modifier = Modifier.size(22.dp)) }
 
             Box(
                 Modifier
@@ -337,8 +385,9 @@ private fun ReplyBar(
                         .clip(CircleShape)
                         .background(c.post.copy(alpha = if (canSend) 1f else 0.5f))
                         .clickable(enabled = canSend) {
-                            vm.post(ctl.draft, emptyList(), target.id) {
+                            vm.post(ctl.draft, ctl.images, target.id) {
                                 ctl.draft = ""
+                                ctl.images = emptyList()
                                 ctl.replyTarget = null
                                 focusManager.clearFocus()
                             }
@@ -398,6 +447,7 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
                     fontSize = 20.sp,
                     lineHeight = 28.sp,
                     modifier = Modifier.padding(top = 12.dp),
+                    onOpenHashtag = actions.onOpenHashtag,
                 )
                 LinkCards(
                     text = shown.text,
@@ -407,7 +457,7 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
             if (shown.media.isNotEmpty()) {
                 MediaGrid(media = shown.media, loader = loader, onOpen = { i -> actions.onOpenMedia(shown.media, i) }, httpClient = actions.mediaHttpClient)
             }
-            shown.poll?.let { PollCard(it) }
+            shown.poll?.let { PollCard(shown, it, actions.onVote) }
             shown.quoted?.let { QuotedPost(it, loader, actions) }
         }
 
@@ -420,7 +470,9 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
             )
         }
 
-        val stamp = absoluteTime(shown.createdAt) + (shown.source?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "")
+        val stamp = absoluteTime(shown.createdAt) +
+            (shown.source?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "") +
+            (if (shown.editedAt != null) " · 編集済み" else "")
         Text(stamp, color = c.textMuted, fontSize = 15.sp, modifier = Modifier.padding(top = 16.dp, bottom = 12.dp))
 
         val counts = buildList<Pair<Int, String>> {

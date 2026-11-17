@@ -72,6 +72,9 @@ object NIcons {
         "m14.5 7.5 2 2",
     ))
     val Back = NIcon(strokes = listOf("M19 12H5", "m11 18-6-6 6-6"), strokeWidth = 2.2f)
+    val Plus = NIcon(strokes = listOf("M12 5v14", "M5 12h14"), strokeWidth = 2.2f)
+    /** 検索の絞り込み（スライダー） */
+    val Filter = NIcon(strokes = listOf("M4 8h16", "M4 16h16", "M9 5v6", "M15 13v6"), strokeWidth = 2f)
     val Close = NIcon(strokes = listOf("M6 6l12 12M18 6L6 18"), strokeWidth = 2.2f)
     val More = NIcon(fills = listOf(
         "M5 10.5a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0-3Z",

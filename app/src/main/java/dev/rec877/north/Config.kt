@@ -13,8 +13,11 @@ object Config {
     /** Workerの APP_SCHEME / AndroidManifest と揃える */
     const val APP_SCHEME = "rec877north"
 
-    /** follows.write を追加（フォロー/解除）。変更後は一度ログアウト→再ログインが必要 */
-    const val SCOPES = "posts.read users.read posts.write posts.delete reactions.write media.write notifications.read notifications.write follows.write drafts.read drafts.write trends.read profile.write bookmarks.read bookmarks.write lists.read lists.write"
+    /**
+     * posts.edit（ポスト編集）/ polls.vote（投票）/ moderation.read・moderation.write（ミュート・ブロック）を追加。
+     * 変更後は一度ログアウト→再ログインが必要
+     */
+    const val SCOPES = "posts.read users.read posts.write posts.edit posts.delete polls.vote reactions.write media.write notifications.read notifications.write follows.write moderation.read moderation.write drafts.read drafts.write trends.read profile.write bookmarks.read bookmarks.write lists.read lists.write"
 
     /**
      * 端末内判定モデル(nsfw.tflite, 約22.5MB)。APKには同梱せず、初回の判定時にここから取得する。

@@ -87,10 +87,15 @@ fun SearchScreen(vm: MainViewModel, loader: ImageLoader, actions: PostActions, l
 
     Column(Modifier.fillMaxSize()) {
         // ---- 検索ボックス: 角丸ピル・42dp・フォーカスでアイコンがアクセント色に ----
-        Box(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        var showAdvanced by remember { mutableStateOf(false) }
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Row(
                 Modifier
-                    .fillMaxWidth()
+                    .weight(1f)
                     .height(42.dp)
                     .clip(CircleShape)
                     .background(c.elev2)
@@ -134,6 +139,17 @@ fun SearchScreen(vm: MainViewModel, loader: ImageLoader, actions: PostActions, l
                     ) { NorthIcon(NIcons.Close, c.textOnAccent, 12.dp, modifier = Modifier.size(12.dp)) }
                 }
             }
+            // 高度な検索（検索語句を項目ごとに組み立てる）
+            Box(
+                Modifier.size(42.dp).clip(CircleShape).background(c.elev2).clickable { showAdvanced = true },
+                contentAlignment = Alignment.Center,
+            ) { NorthIcon(NIcons.Filter, c.text, 20.dp, modifier = Modifier.size(20.dp)) }
+        }
+        if (showAdvanced) {
+            AdvancedSearchDialog(
+                onDismiss = { showAdvanced = false },
+                onSearch = { q -> showAdvanced = false; vm.setSearchInput(q); vm.submitSearch(q) },
+            )
         }
 
         if (!s.searched) {

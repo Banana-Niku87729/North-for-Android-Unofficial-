@@ -28,7 +28,18 @@ data class User(
     val muting: Boolean = false,
     /** プロフィール先頭に固定されているポスト。ユーザー詳細でのみ返る。 */
     val pinnedTweet: Post? = null,
+    /** プロフィール・ポストの名前横に出す実績バッジ（最大5個）。表示順は displayOrder */
+    val displayedBadges: List<DisplayedBadge> = emptyList(),
 )
+
+@Serializable
+data class DisplayedBadge(val key: String, val awardedAt: String? = null, val displayOrder: Int? = null)
+
+/** 表示するバッジ。ユーザー詳細に無いときは、固定ポストの投稿者（同じ本人）の情報を使う */
+fun User.shownBadges(): List<DisplayedBadge> =
+    (displayedBadges.ifEmpty { pinnedTweet?.author?.displayedBadges.orEmpty() })
+        .sortedBy { it.displayOrder ?: Int.MAX_VALUE }
+        .take(5)
 
 @Serializable
 data class Media(
@@ -79,7 +90,47 @@ data class Post(
     val quotedUnavailable: Boolean = false,
     /** muted / blocked */
     val hiddenReason: String? = null,
+    /** 編集できる状態か（編集ボタンの出し分けに使う。最終判定はサーバー） */
+    val editEligible: Boolean = false,
+    val editCount: Int = 0,
 )
+
+/** 投稿者(userId)のUserを f で書き換える。リポスト元・引用先の投稿者も対象 */
+fun Post.withAuthorPatched(userId: String, f: (User) -> User): Post {
+    val newAuthor = if (author.id == userId) f(author) else author
+    return copy(
+        author = newAuthor,
+        retweetOf = retweetOf?.withAuthorPatched(userId, f),
+        quoted = quoted?.withAuthorPatched(userId, f),
+    )
+}
+
+/** 指定ユーザーの投稿（リポスト含む）を取り除く。引用先がそのユーザーなら引用不可表示にする */
+fun Post.withoutAuthor(userId: String): Post? {
+    if (author.id == userId || retweetOf?.author?.id == userId) return null
+    return if (quoted?.author?.id == userId) copy(quoted = null, quotedUnavailable = true) else this
+}
+
+/** リストへの所属状態（GET /2/lists/memberships?handle=）。contains=そのアカウントが入っているか */
+@Serializable data class ListMembership(
+    val id: String,
+    val name: String,
+    @SerialName("private") val isPrivate: Boolean = false,
+    val memberCount: Int = 0,
+    val contains: Boolean = false,
+)
+@Serializable data class ListMembershipPage(val items: List<ListMembership> = emptyList())
+
+/** 連投（POST /2/tweets/thread）の1件分。replyPolicy は先頭だけでなく各件に指定できる */
+data class ThreadItem(
+    val text: String,
+    val mediaIds: List<String> = emptyList(),
+    val poll: PollInput? = null,
+    /** EVERYONE / FOLLOWING / MENTIONED */
+    val replyPolicy: String = "EVERYONE",
+)
+
+@Serializable data class ThreadResult(val items: List<Post> = emptyList())
 
 @Serializable data class PollOption(
     val id: String,
@@ -170,7 +221,21 @@ data class Notification(
     val tweet: Post? = null,
     val createdAt: String = "",
     val read: Boolean = true,
-)
+    /**
+     * 実績の獲得など、APIの種別一覧にない通知のときの表示名（「会話のきっかけ」など）。
+     * 受信したJSONから NorthApi が取り出して入れる（サーバーのJSONには含まれないフィールド）
+     */
+    @kotlinx.serialization.Transient val label: String? = null,
+    /** 種別が不明な通知の生JSON。長押しでコピーして、項目名の確認に使える */
+    @kotlinx.serialization.Transient val raw: String? = null,
+) {
+    /** 実績・バッジ・システム通知など、既知の種別以外 */
+    val isSystem: Boolean get() = kind !in KNOWN_KINDS
+
+    companion object {
+        val KNOWN_KINDS = setOf("FOLLOW", "LIKE", "RETWEET", "QUOTE", "REPLY", "MENTION", "POST")
+    }
+}
 
 @Serializable data class NotificationPage(val items: List<Notification>, val nextCursor: String? = null)
 @Serializable data class UnreadCount(val count: Int = 0)

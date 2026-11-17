@@ -50,6 +50,8 @@ fun DmScreen(vm: MainViewModel, loader: ImageLoader, visible: Boolean) {
     val privateLoader = remember(loader) { loader.newBuilder().memoryCache(null).diskCache(null).build() }
     DisposableEffect(privateLoader) { onDispose { privateLoader.shutdown() } }
     var selected by remember { mutableStateOf<DmConversation?>(null) }
+    // プロフィールのメッセージボタンから開かれたときは、その会話へ直接入る
+    LaunchedEffect(vm.pendingDm) { vm.pendingDm?.let { selected = it; vm.consumePendingDm() } }
     var requests by rememberSaveable { mutableStateOf(false) }
     BackHandler(enabled = selected != null && visible) { selected = null }
     val conversation = selected

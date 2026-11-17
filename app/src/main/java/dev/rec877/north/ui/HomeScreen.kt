@@ -62,6 +62,13 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import dev.rec877.north.User
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -106,6 +113,11 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
     var pendingTab by remember { mutableStateOf<Int?>(null) }
     var quoteTarget by remember { mutableStateOf<Post?>(null) }
     var viewer by remember { mutableStateOf<Pair<List<Media>, Int>?>(null) }
+    var editSession by remember { mutableStateOf<EditSession?>(null) }
+    var listUser by remember { mutableStateOf<User?>(null) }
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    fun hideKeyboard() { focusManager.clearFocus(force = true); keyboard?.hide() }
 
     // キーボードが出ている間は下部ナビを隠して、入力欄の上の余白を確保する
     val imeOpen = WindowInsets.ime.getBottom(LocalDensity.current) > 0
@@ -162,7 +174,8 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             // 返信ボタン: ポスト詳細を開いて、下の入力欄にカーソルを置く（ポップアップは出さない）
             onReply = { vm.openPost(it.id, focusReply = true) },
             onLike = { vm.toggleLike(it) },
-            onRepost = { repostTarget = it },
+            // RT操作でキーボードが開かないよう、フォーカスを外してから選択肢を出す
+            onRepost = { hideKeyboard(); repostTarget = it },
             onBookmark = { vm.toggleBookmark(it) },
             bookmarkFolders = { vm.bookmarkFolders },
             onLoadBookmarkFolders = vm::loadBookmarkFolders,
@@ -177,6 +190,17 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             onUnpin = vm::unpinPost,
             onSetReplyPolicy = vm::setPostReplyPolicy,
             onDelete = vm::deletePost,
+            onOpenHashtag = { tag ->
+                vm.popToRoot(); tab = 1
+                val q = "#" + tag.removePrefix("#")
+                vm.setSearchInput(q); vm.submitSearch(q)
+            },
+            onVote = vm::votePoll,
+            onEdit = { post -> vm.loadEditable(post) { text, etag -> editSession = EditSession(post, text, etag) } },
+            onManageLists = { listUser = it },
+            onUnfollow = vm::unfollowUser,
+            onMute = vm::setMuted,
+            onBlock = vm::setBlocked,
         )
     }
 
@@ -205,7 +229,37 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             }
         }
 
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        val swipeDrawerEnabled = tab != 3 && !(top?.startsWith("user:") ?: false)
+        Box(
+            Modifier.weight(1f).fillMaxWidth().pointerInput(swipeDrawerEnabled) {
+                if (!swipeDrawerEnabled) return@pointerInput
+                val threshold = 90.dp.toPx()
+                val slop = viewConfiguration.touchSlop
+                // 子より先(Initial)に動きを見て、右向きのスワイプと分かった時点でイベントを消費する。
+                // こうしないと、指を離した位置のポストがタップ扱いで開いてしまう
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    var dx = 0f
+                    var dy = 0f
+                    var mode = 0 // 0=未判定 1=右スワイプ 2=それ以外（縦スクロールなど）
+                    var opened = false
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) { if (mode == 1) change.consume(); break }
+                        val d = change.positionChange()
+                        dx += d.x; dy += d.y
+                        if (mode == 0 && (kotlin.math.abs(dx) > slop || kotlin.math.abs(dy) > slop)) {
+                            mode = if (dx > 0f && dx > 2f * kotlin.math.abs(dy)) 1 else 2
+                        }
+                        if (mode == 1) {
+                            change.consume()
+                            if (!opened && dx > threshold) { opened = true; accountDrawerOpen = true }
+                        }
+                    }
+                }
+            },
+        ) {
             when (tab) {
                 0 -> HomeContent(
                     vm, loader, actions, homeListState,
@@ -232,6 +286,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
                                     vm.setSearchInput(query)
                                     vm.submitSearch(query)
                                 },
+                                onOpenDm = { h -> vm.openDm(h) { vm.popToRoot(); tab = 3 } },
                             )
                             top.startsWith("follows:") -> {
                                 val parts = top.split(":", limit = 3)
@@ -320,8 +375,10 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             drafts = vm.drafts,
             draftsLoading = vm.draftsLoading,
             onOpenDrafts = vm::loadDrafts,
-            onSaveDraft = { text, images, savedMediaIds, done -> vm.saveDraft(text, images, savedMediaIds, done) },
-            onSubmit = { text, images, savedMediaIds, poll, done -> vm.post(text, images, poll = poll, existingMediaIds = savedMediaIds) { done(); composerOpen = false } },
+            onSaveDraft = { text, images, savedMediaIds, extras, done -> vm.saveDraft(text, images, savedMediaIds, done, extras) },
+            onSubmit = { text, images, savedMediaIds, poll, extras, policy, done ->
+                vm.post(text, images, poll = poll, existingMediaIds = savedMediaIds, threadTexts = extras, replyPolicy = policy) { done(); composerOpen = false }
+            },
             onReportIssue = vm::reportAppIssue,
             errorMessage = ui.message,
             onDismissError = vm::dismissMessage,
@@ -334,10 +391,10 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             title = { Text("下書きを保存しますか？", color = c.text, fontWeight = FontWeight.ExtraBold) },
             text = { Text("タブを移動する前に、ホームの入力内容を下書きとして保存できます。", color = c.textMuted) },
             confirmButton = { TextButton(onClick = {
-                vm.saveDraft(inlineDraftText, inlineDraftImages) {
+                vm.saveDraft(inlineDraftText, inlineDraftImages, onDone = {
                     inlineDraftText = ""; inlineDraftImages = emptyList(); clearInlineDraftVersion++
                     vm.popToRoot(); tab = destination; pendingTab = null
-                }
+                })
             }) { Text("保存して移動", color = c.accent, fontWeight = FontWeight.Bold) } },
             dismissButton = { TextButton(onClick = {
                 inlineDraftText = ""; inlineDraftImages = emptyList(); clearInlineDraftVersion++
@@ -349,11 +406,14 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
     repostTarget?.let { target ->
         RepostSheet(
             post = target,
-            onRepost = { vm.toggleRepost(target); repostTarget = null },
+            onRepost = { vm.toggleRepost(target); repostTarget = null; hideKeyboard() },
             onQuote = { quoteTarget = target; repostTarget = null },
-            onDismiss = { repostTarget = null },
+            onDismiss = { repostTarget = null; hideKeyboard() },
         )
     }
+
+    editSession?.let { session -> EditPostDialog(vm, session) { editSession = null } }
+    listUser?.let { u -> ListMembershipDialog(vm, u) { listUser = null } }
 
     quoteTarget?.let { target ->
         QuoteDialog(vm, target, loader) { quoteTarget = null }

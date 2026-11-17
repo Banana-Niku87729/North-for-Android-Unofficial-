@@ -66,7 +66,17 @@ data class NotifState(
     val loaded: Boolean = false,
     /** 未読の数（ナビのバッジに出す） */
     val unread: Int = 0,
-)
+    /** 通知タブの絞り込み。0=すべて / 1=認証済み / 2=@ポスト（返信・メンション・引用） */
+    val filter: Int = 0,
+) {
+    /** 絞り込み後の通知。APIに絞り込みの指定がないため、取得済みの通知を端末側で絞る */
+    val visibleItems: List<Notification>
+        get() = when (filter) {
+            1 -> items.filter { n -> n.actors.any { it.verified } }
+            2 -> items.filter { it.kind == "REPLY" || it.kind == "MENTION" || it.kind == "QUOTE" }
+            else -> items
+        }
+}
 
 /** ポスト詳細・プロフィールのように、ホームの上に重ねる画面の状態を持つもの */
 interface ScreenController {
@@ -81,6 +91,12 @@ interface ScreenController {
 
     /** 自分の固定ポストが変わったとき、開いているプロフィールにも反映する。 */
     fun onPinnedPostChanged(ownerId: String, post: Post?) = Unit
+
+    /** フォロー解除・ミュートなどで、投稿者(userId)の状態が変わったとき */
+    fun patchUser(userId: String, f: (User) -> User) = Unit
+
+    /** ブロック・ミュートした相手のポストを、保持中の一覧から取り除く */
+    fun removeAuthor(userId: String) = Unit
 }
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -170,6 +186,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     var notif by mutableStateOf(NotifState())
         private set
+
+    /** プロフィールの「メッセージ」ボタンで開く会話。DM画面が表示されたら受け取って開く */
+    var pendingDm by mutableStateOf<DmConversation?>(null)
+        private set
+
+    fun consumePendingDm(): DmConversation? = pendingDm.also { pendingDm = null }
+
+    /** 相手との会話を作成（既にあれば取得）して、DM画面で開く。onReady で画面を切り替える */
+    fun openDm(handle: String, onReady: () -> Unit) = launchSafely {
+        val conversation = api.createDm(handle)
+        pendingDm = conversation
+        onReady()
+    }
 
     /** スマホへのバックグラウンド通知（約15分おきの確認）を使うか */
     var bgNotif by mutableStateOf(prefs.getBoolean(K_BG_NOTIF, true))
@@ -389,6 +418,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun onNotificationEvent() {
         refreshUnread()
         if (notifVisible) refreshNotifications(silent = true)
+    }
+
+    fun setNotifFilter(filter: Int) {
+        if (filter == notif.filter) return
+        notif = notif.copy(filter = filter)
     }
 
     fun onNotifTabShown() {
@@ -733,14 +767,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         draftsLoading = false
     }
 
-    fun saveDraft(text: String, images: List<Uri>, existingMediaIds: List<String> = emptyList(), onDone: () -> Unit = {}) {
-        if (text.isBlank() && images.isEmpty() && existingMediaIds.isEmpty()) return
+    fun saveDraft(
+        text: String,
+        images: List<Uri>,
+        existingMediaIds: List<String> = emptyList(),
+        onDone: () -> Unit = {},
+        extraTexts: List<String> = emptyList(),
+    ) {
+        if (text.isBlank() && images.isEmpty() && existingMediaIds.isEmpty() && extraTexts.none { it.isNotBlank() }) return
         launchSafely {
             val resolver = getApplication<Application>().contentResolver
             val mediaIds = existingMediaIds + images.map {
                 api.awaitMediaReady(api.uploadMedia(resolver, it, purpose = "draft")).id
             }
-            api.createDraft(text.trim(), mediaIds)
+            api.createDraft(text.trim(), mediaIds, extraTexts.map { it.trim() }.filter { it.isNotEmpty() })
             loadDrafts()
             ui = ui.copy(message = "下書きを保存しました")
             onDone()
@@ -792,6 +832,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         quoteId: String? = null,
         poll: PollInput? = null,
         existingMediaIds: List<String> = emptyList(),
+        /** 連投の2件目以降の本文（空なら単発）。先頭の画像・投票は1件目に付く */
+        threadTexts: List<String> = emptyList(),
+        /** EVERYONE / FOLLOWING / MENTIONED。EVERYONE以外は連投API経由で投稿する */
+        replyPolicy: String = "EVERYONE",
         onDone: () -> Unit = {},
     ) {
         if (ui.posting) return
@@ -801,7 +845,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val mediaIds = existingMediaIds + images.map {
                 api.awaitMediaReady(api.uploadMedia(resolver, it)).id
             }
-            api.createPost(text.trim(), mediaIds, replyToId, quoteId, poll)
+            val extra = threadTexts.map { it.trim() }.filter { it.isNotEmpty() }
+            if (replyToId == null && quoteId == null && (extra.isNotEmpty() || replyPolicy != "EVERYONE")) {
+                // 連投・返信範囲の指定は POST /2/tweets/thread（1件でも使える）
+                val items = buildList {
+                    add(ThreadItem(text.trim(), mediaIds, poll, replyPolicy))
+                    extra.forEach { add(ThreadItem(it, emptyList(), null, replyPolicy)) }
+                }
+                api.createThread(items)
+            } else {
+                api.createPost(text.trim(), mediaIds, replyToId, quoteId, poll)
+            }
             ui = ui.copy(posting = false)
             onDone()
             if (quoteId != null) updatePost(quoteId) { it.copy(quoteCount = it.quoteCount + 1) }
@@ -887,11 +941,86 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setPostReplyPolicy(post: Post, policy: String) = launchSafely {
-        api.setReplyPolicy(post.id, policy)
+        try {
+            api.setReplyPolicy(post.id, policy)
+        } catch (e: ApiException) {
+            // 公開APIに「投稿済みのポストの返信範囲を変える」操作は無い。投稿時の指定だけが可能
+            if (e.status == 404 || e.status == 405) {
+                ui = ui.copy(message = "APIの仕様上、投稿済みのポストの返信制限は変更できません。新しく投稿するときに「返信できる人」で指定してください。")
+                return@launchSafely
+            }
+            throw e
+        }
         updatePost(post.id) { it.copy(replyPolicy = policy) }
         ui = ui.copy(
             message = if (policy == "FOLLOWING") "返信をフォロー中のみに制限しました" else "返信を全員に開放しました"
         )
+    }
+
+    /** 投票。更新後の集計つきポストが返るので、一覧・詳細すべてに反映する */
+    fun votePoll(post: Post, option: PollOption) = launchSafely {
+        val updated = api.votePoll(post.id, option.id)
+        updatePost(post.id) { it.copy(poll = updated.poll ?: it.poll) }
+    }
+
+    /** 編集できるか確認（ETag取得）→ 本文を更新。編集ダイアログから呼ぶ */
+    fun loadEditable(post: Post, onReady: (text: String, etag: String?) -> Unit) = launchSafely {
+        val (fresh, etag) = api.postWithEtag(post.id)
+        if (!fresh.editEligible) {
+            ui = ui.copy(message = "このポストは編集できません（編集できる期間や回数の上限を過ぎた可能性があります）。")
+            return@launchSafely
+        }
+        onReady(fresh.text, etag)
+    }
+
+    fun editPost(post: Post, text: String, etag: String?, onDone: () -> Unit) = launchSafely {
+        try {
+            val updated = api.editPost(post.id, text.trim(), etag)
+            updatePost(post.id) { it.copy(text = updated.text, editedAt = updated.editedAt ?: it.editedAt, editCount = updated.editCount) }
+            ui = ui.copy(message = "ポストを編集しました")
+            onDone()
+        } catch (e: ApiException) {
+            if (e.status == 412) {
+                ui = ui.copy(message = "ほかの場所で変更されています。ポストを開き直してからもう一度編集してください。")
+                return@launchSafely
+            }
+            throw e
+        }
+    }
+
+    // ---------------- ミュート・ブロック・フォロー解除 ----------------
+    /** 投稿者(userId)の状態を、ホーム・検索・開いている画面すべてで書き換える */
+    fun patchUser(userId: String, f: (User) -> User) {
+        ui = ui.copy(posts = ui.posts.map { it.withAuthorPatched(userId, f) })
+        search = search.copy(results = search.results.map { it.withAuthorPatched(userId, f) })
+        screens.values.toList().forEach { it.patchUser(userId, f) }
+    }
+
+    private fun removeAuthorPosts(userId: String) {
+        ui = ui.copy(posts = ui.posts.mapNotNull { it.withoutAuthor(userId) })
+        search = search.copy(results = search.results.mapNotNull { it.withoutAuthor(userId) })
+        screens.values.toList().forEach { it.removeAuthor(userId) }
+    }
+
+    fun setMuted(user: User, on: Boolean) = launchSafely {
+        if (on) api.mute(user.handle) else api.unmute(user.handle)
+        patchUser(user.id) { it.copy(muting = on) }
+        if (on) removeAuthorPosts(user.id)
+        ui = ui.copy(message = if (on) "@${user.handle} さんをミュートしました" else "@${user.handle} さんのミュートを解除しました")
+    }
+
+    fun setBlocked(user: User, on: Boolean) = launchSafely {
+        if (on) api.block(user.handle) else api.unblock(user.handle)
+        // ブロックすると双方のフォローが外れる
+        patchUser(user.id) { if (on) it.copy(blocking = true, following = false, followedBy = false) else it.copy(blocking = false) }
+        if (on) removeAuthorPosts(user.id)
+        ui = ui.copy(message = if (on) "@${user.handle} さんをブロックしました" else "@${user.handle} さんのブロックを解除しました")
+    }
+
+    fun unfollowUser(user: User) = launchSafely {
+        api.unfollow(user.handle)
+        patchUser(user.id) { it.copy(following = false) }
+        ui = ui.copy(message = "@${user.handle} さんのフォローを解除しました")
     }
 
     fun deletePost(post: Post) = launchSafely {

@@ -1,9 +1,10 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 
 package dev.rec877.north.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,9 +27,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -54,7 +60,6 @@ import dev.rec877.north.ui.theme.North
 fun NotificationsScreen(vm: MainViewModel, loader: ImageLoader, listState: LazyListState) {
     val c = North.colors
     val n = vm.notif
-
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier.fillMaxWidth().height(53.dp).padding(start = 16.dp, end = 8.dp),
@@ -75,21 +80,28 @@ fun NotificationsScreen(vm: MainViewModel, loader: ImageLoader, listState: LazyL
         }
         HorizontalDivider(color = c.border)
 
+        // すべて / 認証済み / @ポスト（APIに絞り込みの指定がないため、取得済みの通知を端末側で絞る）
+        NorthTabs(listOf("すべて", "認証済み", "@ポスト"), n.filter) { vm.setNotifFilter(it) }
+
+        val shown = n.visibleItems
+
         PullToRefreshBox(
             isRefreshing = n.refreshing,
             onRefresh = { vm.refreshNotifications() },
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) {
             LazyColumn(Modifier.fillMaxSize(), state = listState) {
-                items(n.items, key = { it.id }) { item ->
+                items(shown, key = { it.id }) { item ->
                     NotificationRow(
                         n = item,
                         loader = loader,
                         onClick = {
                             val tweet = item.tweet
                             val actor = item.actors.firstOrNull()
+                            // 実績の獲得などは、開く先がない
+                            if (item.isSystem) Unit
                             // フォロー通知は最新の一人ではなく、自分のフォロワー全体を確認できる一覧へ。
-                            if (item.kind == "FOLLOW") vm.ui.me?.let { vm.open(dev.rec877.north.Dest.follows(it.handle, "followers")) }
+                            else if (item.kind == "FOLLOW") vm.ui.me?.let { vm.open(dev.rec877.north.Dest.follows(it.handle, "followers")) }
                             else if (tweet != null) vm.openPost(tweet.id)
                             else if (actor != null) vm.openUser(actor.handle)
                         },
@@ -109,10 +121,14 @@ fun NotificationsScreen(vm: MainViewModel, loader: ImageLoader, listState: LazyL
                             )
                         }
                     }
-                } else if (n.loaded && n.items.isEmpty()) {
+                } else if (n.loaded && shown.isEmpty()) {
                     item(key = "empty") {
                         Text(
-                            "通知はまだありません",
+                            when (n.filter) {
+                                1 -> "認証済みアカウントからの通知はありません"
+                                2 -> "返信・メンション・引用の通知はありません"
+                                else -> "通知はまだありません"
+                            },
                             color = c.textMuted,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.fillMaxWidth().padding(32.dp),
@@ -132,13 +148,15 @@ private fun NotificationRow(
     onOpenUser: (String) -> Unit,
 ) {
     val c = North.colors
+    val context = LocalContext.current
     val (icon, tint) = when (n.kind) {
         "FOLLOW" -> NIcons.Person to c.accent
         "LIKE" -> NIcons.Like to c.like
         "RETWEET", "QUOTE" -> NIcons.Repost to c.repost
         "POST" -> NIcons.Sparkle to c.accent
         "REPLY", "MENTION" -> NIcons.Reply to c.textMuted
-        else -> NIcons.Bell to c.textMuted
+        // 実績の獲得など（APIの種別一覧にないもの）
+        else -> NIcons.Sparkle to c.accent
     }
 
     val (name, tail) = notificationWho(n)
@@ -150,21 +168,43 @@ private fun NotificationRow(
         Config.absUrl(if (m.kind == "VIDEO") m.thumbnailUrl else m.url)
     }
 
+    fun copyRawJson() {
+        val json = n.raw ?: return
+        val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("north 通知JSON", json))
+        android.widget.Toast.makeText(context, "通知のJSONをコピーしました", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     Column {
         Row(
             Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick)
+                .combinedClickable(
+                    onClick = onClick,
+                    // 種別不明の通知は、長押しで生のJSONをコピーできる（項目名の確認用）
+                    onLongClick = if (n.isSystem && n.raw != null) ::copyRawJson else null,
+                )
                 .background(if (n.read) Color.Transparent else c.accent.copy(alpha = 0.06f))
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(Modifier.width(30.dp).padding(top = 2.dp), contentAlignment = Alignment.TopEnd) {
-                NorthIcon(icon, tint, 24.dp, filled = n.kind == "LIKE", modifier = Modifier.size(24.dp))
+                val badge = if (n.isSystem) dev.rec877.north.badgeDef(n.label) else null
+                if (badge != null) BadgeIcon(badge, 30.dp)
+                else NorthIcon(icon, tint, 24.dp, filled = n.kind == "LIKE", modifier = Modifier.size(24.dp))
             }
 
             Column(Modifier.weight(1f)) {
-                if (n.actors.isNotEmpty()) {
+                if (n.isSystem) {
+                    // 例: 「会話のきっかけ」を獲得しました
+                    Text(
+                        n.label?.let { "「${dev.rec877.north.badgeDisplayName(it)}」を獲得しました" } ?: "新しい通知があります",
+                        color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, lineHeight = 20.sp,
+                    )
+                    dev.rec877.north.badgeDef(n.label)?.let {
+                        Text(it.description, color = c.textMuted, fontSize = 13.sp, modifier = Modifier.padding(top = 2.dp))
+                    }
+                } else if (n.actors.isNotEmpty()) {
                     Row(
                         Modifier.padding(bottom = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -174,7 +214,9 @@ private fun NotificationRow(
                         }
                     }
                 }
-                if (firstActor != null) {
+                if (n.isSystem) {
+                    // 実績の説明などは行わない（表示名のみ）
+                } else if (firstActor != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                         UserBadges(firstActor)
@@ -185,7 +227,7 @@ private fun NotificationRow(
                 }
                 if (tweet != null && tweet.text.isNotEmpty()) {
                     Text(
-                        tweet.text,
+                        remember(tweet.text, c.accent) { richAnnotatedString(tweet.text, c.accent) },
                         color = c.textMuted,
                         fontSize = 15.sp,
                         lineHeight = 20.sp,

@@ -114,7 +114,7 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
     private val bodyMethods = setOf("POST", "PUT", "PATCH")
 
-    private class Resp(val code: Int, val text: String)
+    private class Resp(val code: Int, val text: String, val etag: String? = null)
 
     private suspend fun send(
         method: String,
@@ -123,7 +123,16 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         idempotent: Boolean = false,
         multipart: RequestBody? = null,
         extraHeaders: Map<String, String> = emptyMap(),
-    ): String = withContext(Dispatchers.IO) {
+    ): String = sendRaw(method, path, body, idempotent, multipart, extraHeaders).text
+
+    private suspend fun sendRaw(
+        method: String,
+        path: String,
+        body: String? = null,
+        idempotent: Boolean = false,
+        multipart: RequestBody? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): Resp = withContext(Dispatchers.IO) {
         val key = if (idempotent) UUID.randomUUID().toString() else null
 
         fun exec(token: String): Resp {
@@ -139,7 +148,7 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
                 }
                 .method(method, reqBody)
                 .build()
-            return http.newCall(req).execute().use { Resp(it.code, it.body?.string().orEmpty()) }
+            return http.newCall(req).execute().use { Resp(it.code, it.body?.string().orEmpty(), it.header("ETag")) }
         }
 
         var token = auth.authToken()
@@ -149,7 +158,7 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
             r = exec(token.value)
         }
         if (r.code !in 200..299) throw ApiException(r.code, r.text)
-        r.text
+        r
     }
 
     suspend fun me(): User =
@@ -253,13 +262,15 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
     suspend fun drafts(): List<Draft> =
         json.decodeFromString<Envelope<DraftPage>>(send("GET", "/2/drafts")).data.items
 
-    suspend fun createDraft(text: String, mediaIds: List<String> = emptyList()): Draft {
+    suspend fun createDraft(text: String, mediaIds: List<String> = emptyList(), extraTexts: List<String> = emptyList()): Draft {
         val body = buildJsonObject {
             putJsonArray("items") {
                 add(buildJsonObject {
                     put("text", text)
                     if (mediaIds.isNotEmpty()) putJsonArray("mediaIds") { mediaIds.forEach { add(it) } }
                 })
+                // 連投の2件目以降
+                extraTexts.forEach { extra -> add(buildJsonObject { put("text", extra) }) }
             }
         }.toString()
         return json.decodeFromString<Envelope<Draft>>(send("POST", "/2/drafts", body, idempotent = true)).data
@@ -447,7 +458,19 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
     // ---------------- 通知 ----------------
     suspend fun notifications(cursor: String? = null): NotificationPage {
         val q = if (cursor != null) "?cursor=" + URLEncoder.encode(cursor, "UTF-8") else ""
-        return json.decodeFromString<Envelope<NotificationPage>>(send("GET", "/2/notifications$q")).data
+        val text = send("GET", "/2/notifications$q")
+        val data = json.parseToJsonElement(text).jsonObject["data"]?.jsonObject
+            ?: return json.decodeFromString<Envelope<NotificationPage>>(text).data
+        val rawItems = data["items"]?.jsonArray.orEmpty()
+        val items = rawItems.mapNotNull { el ->
+            val obj = el as? kotlinx.serialization.json.JsonObject ?: return@mapNotNull null
+            val n = runCatching { json.decodeFromJsonElement(Notification.serializer(), obj) }.getOrNull()
+                ?: return@mapNotNull null
+            // 実績の獲得など、種別一覧にない通知は、JSONから表示名を探して控える
+            if (n.isSystem) n.copy(label = extractNotificationLabel(obj), raw = obj.toString()) else n
+        }
+        val next = data["nextCursor"]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
+        return NotificationPage(items, next)
     }
 
     suspend fun unreadCount(): Int =
@@ -524,8 +547,114 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         }
     }
 
+    // ---------------- 連投・編集・投票 ----------------
+    /**
+     * 連投（先頭の投稿に、続きの投稿が返信として連なる）。1〜25件。
+     * 返信できる範囲(replyPolicy)・画像・投票も、この経路なら1件ごとに指定できる。
+     */
+    suspend fun createThread(items: List<ThreadItem>): List<Post> {
+        val body = buildJsonObject {
+            putJsonArray("items") {
+                items.forEach { item ->
+                    add(buildJsonObject {
+                        put("text", item.text)
+                        if (item.mediaIds.isNotEmpty()) putJsonArray("mediaIds") { item.mediaIds.forEach { add(it) } }
+                        if (item.replyPolicy != "EVERYONE") put("replyPolicy", item.replyPolicy)
+                        item.poll?.let { poll ->
+                            putJsonObject("poll") {
+                                putJsonArray("options") { poll.options.forEach { add(it) } }
+                                put("durationMinutes", poll.durationMinutes)
+                            }
+                        }
+                    })
+                }
+            }
+        }.toString()
+        return json.decodeFromString<Envelope<ThreadResult>>(
+            send("POST", "/2/tweets/thread", body, idempotent = true)
+        ).data.items
+    }
+
+    /** 編集に必要な版識別子(ETag)つきでポストを1件取得する */
+    suspend fun postWithEtag(id: String): Pair<Post, String?> {
+        val r = sendRaw("GET", "/2/tweets/${URLEncoder.encode(id, "UTF-8")}")
+        return json.decodeFromString<Envelope<Post>>(r.text).data to r.etag
+    }
+
+    /** ポストを編集する（posts.edit が必要）。etag は postWithEtag で取ったもの */
+    suspend fun editPost(id: String, text: String, etag: String?): Post {
+        val body = buildJsonObject { put("text", text) }.toString()
+        val headers = if (etag != null) mapOf("If-Match" to etag) else emptyMap()
+        return json.decodeFromString<Envelope<Post>>(
+            sendRaw("PUT", "/2/tweets/${URLEncoder.encode(id, "UTF-8")}/edit", body, idempotent = true, extraHeaders = headers).text
+        ).data
+    }
+
+    /** 投票する（polls.vote が必要）。更新後のポストが返る */
+    suspend fun votePoll(postId: String, optionId: String): Post {
+        val body = buildJsonObject { put("optionId", optionId) }.toString()
+        return json.decodeFromString<Envelope<Post>>(
+            send("POST", "/2/tweets/${URLEncoder.encode(postId, "UTF-8")}/poll/vote", body, idempotent = true)
+        ).data
+    }
+
+    // ---------------- ミュート・ブロック・リスト ----------------
+    suspend fun mute(handle: String) { send("POST", "/2/users/${URLEncoder.encode(handle, "UTF-8")}/mute", idempotent = true) }
+    suspend fun unmute(handle: String) { send("DELETE", "/2/users/${URLEncoder.encode(handle, "UTF-8")}/mute") }
+    suspend fun block(handle: String) { send("POST", "/2/users/${URLEncoder.encode(handle, "UTF-8")}/block", idempotent = true) }
+    suspend fun unblock(handle: String) { send("DELETE", "/2/users/${URLEncoder.encode(handle, "UTF-8")}/block") }
+
+    /** 自分の所有リストのうち、handle のアカウントが入っているものに contains=true が付く */
+    suspend fun listMemberships(handle: String): List<ListMembership> =
+        json.decodeFromString<Envelope<ListMembershipPage>>(
+            send("GET", "/2/lists/memberships?handle=" + URLEncoder.encode(handle, "UTF-8"))
+        ).data.items
+
+    suspend fun addListMember(listId: String, handle: String) {
+        send("POST", "/2/lists/${URLEncoder.encode(listId, "UTF-8")}/members/${URLEncoder.encode(handle, "UTF-8")}", idempotent = true)
+    }
+
+    suspend fun removeListMember(listId: String, handle: String) {
+        send("DELETE", "/2/lists/${URLEncoder.encode(listId, "UTF-8")}/members/${URLEncoder.encode(handle, "UTF-8")}")
+    }
+
     suspend fun like(id: String) { send("POST", "/2/tweets/$id/like", idempotent = true) }
     suspend fun unlike(id: String) { send("DELETE", "/2/tweets/$id/like") }
     suspend fun retweet(id: String) { send("POST", "/2/tweets/$id/retweet", idempotent = true) }
     suspend fun unretweet(id: String) { send("DELETE", "/2/tweets/$id/retweet") }
+}
+
+/**
+ * 実績の獲得などの通知JSONから、表示名（「会話のきっかけ」など）を探す。
+ * 項目名がAPI仕様に載っていないため、実績・バッジらしいオブジェクト → 名前らしい文字列キー → 残りの文字列、の順に探す。
+ */
+internal fun extractNotificationLabel(obj: kotlinx.serialization.json.JsonObject): String? {
+    val skip = setOf(
+        "id", "kind", "createdAt", "read", "actors", "actorCount", "groupCount", "targetCount", "tweet",
+        "type", "url", "icon", "iconUrl", "image", "imageUrl", "color", "slug", "key", "code",
+    )
+    val nameKeys = listOf("name", "title", "label", "displayName", "text", "message", "body", "description")
+
+    fun str(e: kotlinx.serialization.json.JsonElement?): String? =
+        (e as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() }
+
+    fun fromObject(o: kotlinx.serialization.json.JsonObject): String? {
+        nameKeys.firstNotNullOfOrNull { str(o[it]) }?.let { return it }
+        return o.entries.firstNotNullOfOrNull { (k, v) -> if (k in skip) null else str(v) }
+    }
+
+    // 1) achievement / badge / trophy などの名前のキー（オブジェクトまたは文字列）
+    for ((key, value) in obj) {
+        if (!Regex("achiev|badge|trophy|medal|award|reward", RegexOption.IGNORE_CASE).containsMatchIn(key)) continue
+        str(value)?.let { return it }
+        (value as? kotlinx.serialization.json.JsonObject)?.let { o -> fromObject(o)?.let { return it } }
+    }
+    // 2) 名前らしい文字列キー
+    nameKeys.firstNotNullOfOrNull { str(obj[it]) }?.let { return it }
+    // 3) ネストしたオブジェクトの中
+    for ((key, value) in obj) {
+        if (key in skip) continue
+        (value as? kotlinx.serialization.json.JsonObject)?.let { o -> fromObject(o)?.let { return it } }
+    }
+    return null
 }

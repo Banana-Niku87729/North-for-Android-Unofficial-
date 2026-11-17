@@ -8,6 +8,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -77,6 +79,12 @@ import kotlinx.coroutines.withContext
 
 private const val MAX_MEDIA_ITEMS = 4
 private const val MAX_WEIGHT = 280
+
+internal fun replyPolicyLabel(policy: String): String = when (policy) {
+    "FOLLOWING" -> "フォローしている人が返信できます"
+    "MENTIONED" -> "メンションした人だけが返信できます"
+    else -> "全員が返信できます"
+}
 
 
 /** 入力欄が配置された次のフレームでカーソルを置き、キーボードを出す。 */
@@ -294,8 +302,12 @@ fun FullScreenComposer(
     drafts: List<dev.rec877.north.Draft>,
     draftsLoading: Boolean,
     onOpenDrafts: () -> Unit,
-    onSaveDraft: (String, List<Uri>, List<String>, () -> Unit) -> Unit,
-    onSubmit: (text: String, images: List<Uri>, existingMediaIds: List<String>, poll: PollInput?, onDone: () -> Unit) -> Unit,
+    /** 本文・画像・保存済み添付・連投の2件目以降・完了時の処理 */
+    onSaveDraft: (String, List<Uri>, List<String>, List<String>, () -> Unit) -> Unit,
+    onSubmit: (
+        text: String, images: List<Uri>, existingMediaIds: List<String>, poll: PollInput?,
+        threadTexts: List<String>, replyPolicy: String, onDone: () -> Unit,
+    ) -> Unit,
     onReportIssue: (String) -> Unit = {},
     /** アップロード・投稿の失敗。投稿画面は別ウィンドウで背面のバナーが見えないため、ここに出す。 */
     errorMessage: String? = null,
@@ -315,6 +327,10 @@ fun FullScreenComposer(
     var pollHours by remember { mutableStateOf("0") }
     var pollMinutes by remember { mutableStateOf("0") }
     var directPostApproved by rememberSaveable(text) { mutableStateOf(false) }
+    // 連投: 2件目以降の本文（最大24件＝合計25件）と、返信できる人
+    var threadTexts by remember { mutableStateOf<List<String>>(emptyList()) }
+    var replyPolicy by remember { mutableStateOf("EVERYONE") }
+    var policyDialogOpen by remember { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
     AutoFocus(enabled = true, focusRequester = focusRequester)
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_MEDIA_ITEMS)) { picked ->
@@ -329,14 +345,16 @@ fun FullScreenComposer(
     val durationMinutes = ((pollDays.toIntOrNull() ?: -1) * 1440) + ((pollHours.toIntOrNull() ?: -1) * 60) + (pollMinutes.toIntOrNull() ?: -1)
     val pollValid = submittedOptions == null || (submittedOptions.size in 2..4 && submittedOptions.all { it.length <= 25 } && durationMinutes in 5..10080)
     val hasDeveloperTag = text.contains("#おうどんに伝えたい")
-    val canSend = !posting && (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty() || normalizedPoll != null) && weight <= MAX_WEIGHT && pollValid && (!hasDeveloperTag || directPostApproved)
+    val extrasOver = threadTexts.any { postWeight(it) > MAX_WEIGHT }
+    val hasExtras = threadTexts.any { it.isNotBlank() }
+    val canSend = !posting && (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty() || normalizedPoll != null) && weight <= MAX_WEIGHT && !extrasOver && pollValid && (!hasDeveloperTag || directPostApproved)
 
     Column(
         Modifier.fillMaxSize().background(c.bg).windowInsetsPadding(WindowInsets.safeDrawing).imePadding()
     ) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(40.dp).clip(CircleShape).clickable {
-                if (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty() || pollOptions != null) confirmSaveOnClose = true else onClose()
+                if (text.isNotBlank() || images.isNotEmpty() || restoredMediaIds.isNotEmpty() || pollOptions != null || hasExtras) confirmSaveOnClose = true else onClose()
             }, contentAlignment = Alignment.Center) {
                 NorthIcon(NIcons.Close, c.text, 26.dp, modifier = Modifier.size(26.dp))
             }
@@ -347,7 +365,9 @@ fun FullScreenComposer(
                 Modifier.height(44.dp).clip(CircleShape).background(c.accent.copy(alpha = if (canSend) 1f else .45f))
                     .clickable(enabled = canSend) {
                         val poll = submittedOptions?.let { PollInput(it, durationMinutes) }
-                        onSubmit(text, images, restoredMediaIds, poll) { text = ""; images = emptyList(); restoredMediaIds = emptyList(); pollOptions = null }
+                        onSubmit(text, images, restoredMediaIds, poll, threadTexts.filter { it.isNotBlank() }, replyPolicy) {
+                            text = ""; images = emptyList(); restoredMediaIds = emptyList(); pollOptions = null; threadTexts = emptyList()
+                        }
                     }
                     .padding(horizontal = 20.dp), contentAlignment = Alignment.Center,
             ) { Text(if (posting) "送信中…" else "ポストする", color = c.textOnAccent, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp) }
@@ -371,13 +391,13 @@ fun FullScreenComposer(
         }
         Row(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 18.dp, vertical = 18.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (me != null) Avatar(me, 48.dp, loader) else Box(Modifier.size(48.dp).clip(CircleShape).background(c.elev3))
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 BasicTextField(
                     value = text,
                     onValueChange = { text = it },
                     textStyle = TextStyle(color = c.text, fontSize = 22.sp, lineHeight = 30.sp),
                     cursorBrush = SolidColor(c.accent),
-                    modifier = Modifier.fillMaxWidth().weight(1f).focusRequester(focusRequester),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp).focusRequester(focusRequester),
                     decorationBox = { inner -> Box { if (text.isEmpty()) Text("いまどうしてる？", color = c.textMuted, fontSize = 22.sp); inner() } },
                 )
                 if (images.isNotEmpty()) {
@@ -396,6 +416,51 @@ fun FullScreenComposer(
                 submittedOptions?.let { options ->
                     Text("投票: ${options.joinToString(" / ")}", color = c.textMuted, fontSize = 14.sp, modifier = Modifier.padding(top = 10.dp))
                 }
+
+                // 280字を超えたとき、超えた分を自動で次のポストへ分ける
+                if (weight > MAX_WEIGHT) {
+                    Text(
+                        "280字ごとに分けて連投にする",
+                        color = c.accent, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 10.dp).clickable {
+                            val parts = splitPostText(text)
+                            if (parts.size > 1) {
+                                text = parts.first()
+                                threadTexts = (parts.drop(1) + threadTexts).take(24)
+                            }
+                        },
+                    )
+                }
+
+                // 連投の2件目以降（先頭のポストに、返信として連なる）
+                threadTexts.forEachIndexed { index, extraText ->
+                    val w = postWeight(extraText)
+                    HorizontalDivider(color = c.border, modifier = Modifier.padding(top = 12.dp))
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${index + 2} 件目", color = c.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        Text("$w/$MAX_WEIGHT", color = if (w > MAX_WEIGHT) c.danger else c.textMuted, fontSize = 13.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Box(
+                            Modifier.size(28.dp).clip(CircleShape).clickable { threadTexts = threadTexts.filterIndexed { i, _ -> i != index } },
+                            contentAlignment = Alignment.Center,
+                        ) { NorthIcon(NIcons.Close, c.textMuted, 16.dp, modifier = Modifier.size(16.dp)) }
+                    }
+                    BasicTextField(
+                        value = extraText,
+                        onValueChange = { v -> threadTexts = threadTexts.mapIndexed { i, old -> if (i == index) v else old } },
+                        textStyle = TextStyle(color = c.text, fontSize = 20.sp, lineHeight = 28.sp),
+                        cursorBrush = SolidColor(c.accent),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 72.dp).padding(vertical = 6.dp),
+                        decorationBox = { inner -> Box { if (extraText.isEmpty()) Text("続きを入力", color = c.textMuted, fontSize = 20.sp); inner() } },
+                    )
+                }
+
+                // 返信できる人（EVERYONE以外は連投APIで投稿される）
+                Text(
+                    "🌐 " + replyPolicyLabel(replyPolicy),
+                    color = c.accent, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 14.dp, bottom = 12.dp).clickable { policyDialogOpen = true },
+                )
             }
         }
         HorizontalDivider(color = c.border)
@@ -407,8 +472,35 @@ fun FullScreenComposer(
             Text(if (pollOptions == null) "投票を追加" else "投票を編集", color = c.accent, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 10.dp).clickable { pollEditorOpen = true })
             Spacer(Modifier.weight(1f))
             if (text.isNotEmpty()) { Spacer(Modifier.width(12.dp)); Text("$weight/$MAX_WEIGHT", color = if (weight > MAX_WEIGHT) c.danger else c.textMuted, fontSize = 13.sp) }
+            // Web版の「＋」: 続きのポストを追加して、返信ツリーを一度に作成する
+            val canAddThread = !posting && threadTexts.size < 24
+            Spacer(Modifier.width(12.dp))
+            Box(
+                Modifier.size(40.dp).clip(CircleShape).border(1.dp, c.borderStrong, CircleShape).alpha(if (canAddThread) 1f else .4f)
+                    .clickable(enabled = canAddThread) { threadTexts = threadTexts + "" },
+                contentAlignment = Alignment.Center,
+            ) { NorthIcon(NIcons.Plus, c.accent, 20.dp, modifier = Modifier.size(20.dp)) }
         }
     }
+    if (policyDialogOpen) AlertDialog(
+        onDismissRequest = { policyDialogOpen = false },
+        containerColor = c.elev1,
+        title = { Text("返信できる人", color = c.text, fontWeight = FontWeight.ExtraBold) },
+        text = {
+            Column {
+                listOf("EVERYONE", "FOLLOWING", "MENTIONED").forEach { policy ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { replyPolicy = policy; policyDialogOpen = false }.padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(replyPolicyLabel(policy), color = c.text, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        if (policy == replyPolicy) Text("✓", color = c.accent, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { policyDialogOpen = false }) { Text("閉じる", color = c.accent) } },
+    )
     if (draftPickerOpen) AlertDialog(
         onDismissRequest = { draftPickerOpen = false },
         containerColor = c.elev1,
@@ -420,7 +512,12 @@ fun FullScreenComposer(
                 else drafts.take(10).forEach { draft ->
                     val item = draft.items.firstOrNull()
                     Text(item?.text?.ifBlank { "メディアのみの下書き" } ?: "空の下書き", color = c.text, maxLines = 2,
-                        modifier = Modifier.fillMaxWidth().clickable { text = item?.text.orEmpty(); images = emptyList(); restoredMediaIds = item?.media?.map { it.id }.orEmpty(); draftPickerOpen = false }.padding(vertical = 12.dp))
+                        modifier = Modifier.fillMaxWidth().clickable {
+                            text = item?.text.orEmpty(); images = emptyList(); restoredMediaIds = item?.media?.map { it.id }.orEmpty()
+                            threadTexts = draft.items.drop(1).map { it.text }.take(24)
+                            item?.replyPolicy?.takeIf { it in listOf("EVERYONE", "FOLLOWING", "MENTIONED") }?.let { replyPolicy = it }
+                            draftPickerOpen = false
+                        }.padding(vertical = 12.dp))
                     HorizontalDivider(color = c.border)
                 }
             }
@@ -458,14 +555,14 @@ fun FullScreenComposer(
         containerColor = c.elev1,
         title = { Text("下書きを保存しますか？", color = c.text, fontWeight = FontWeight.ExtraBold) },
         text = { Text("投稿せずに閉じると、入力内容と添付を下書きへ保存できます。", color = c.textMuted) },
-        confirmButton = { TextButton(onClick = { confirmSaveOnClose = false; onSaveDraft(text, images, restoredMediaIds) { onClose() } }) { Text("保存して閉じる", color = c.accent, fontWeight = FontWeight.Bold) } },
+        confirmButton = { TextButton(onClick = { confirmSaveOnClose = false; onSaveDraft(text, images, restoredMediaIds, threadTexts.filter { it.isNotBlank() }) { onClose() } }) { Text("保存して閉じる", color = c.accent, fontWeight = FontWeight.Bold) } },
         dismissButton = { TextButton(onClick = { confirmSaveOnClose = false; onClose() }) { Text("保存しない", color = c.danger) } },
     )
 }
 
 /** 選択した画像または動画の投稿前プレビュー。動画は端末内ファイルから静止画を抽出する。 */
 @Composable
-private fun SelectedMediaThumbnail(uri: Uri, loader: ImageLoader, modifier: Modifier = Modifier) {
+internal fun SelectedMediaThumbnail(uri: Uri, loader: ImageLoader, modifier: Modifier = Modifier) {
     val c = North.colors
     val context = LocalContext.current
     val isVideo = remember(uri, context) {

@@ -19,6 +19,11 @@ fun notificationWho(n: Notification): Pair<String, String> {
 }
 
 fun notificationSummary(n: Notification): String {
+    // 実績の獲得など（APIの種別一覧にない通知）
+    if (n.isSystem) return n.label?.let { "「${badgeDisplayName(it)}」を獲得しました" } ?: "新しい通知があります"
     val (name, tail) = notificationWho(n)
     return name + tail + notificationAction(n.kind)
 }
+
+/** 実績バッジのキー（post-10 / first-post など）を表示名にする。未知のキーはそのまま返す */
+fun badgeDisplayName(key: String): String = badgeDef(key)?.name ?: key
