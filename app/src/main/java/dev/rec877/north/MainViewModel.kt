@@ -246,6 +246,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var highContrast by mutableStateOf(prefs.getBoolean(K_HIGH_CONTRAST, false))
         private set
+    /** YouTube / X のリンクをアプリ内で表示・再生する（オフならURLのカードだけ。外部サービスへの通信も行わない）。 */
+    var externalEmbeds by mutableStateOf(prefs.getBoolean(K_EXTERNAL_EMBEDS, true))
+        private set
     /** 端末のナビゲーション領域との重なりを避けるための、投稿FABのローカル配置設定。 */
     var composeButtonOnLeft by mutableStateOf(prefs.getBoolean(K_COMPOSE_ON_LEFT, false))
         private set
@@ -815,6 +818,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean(K_REDUCE_MOTION, value).apply()
     }
 
+    fun updateExternalEmbeds(value: Boolean) {
+        externalEmbeds = value
+        prefs.edit().putBoolean(K_EXTERNAL_EMBEDS, value).apply()
+    }
+
     fun updateHighContrast(value: Boolean) {
         highContrast = value
         prefs.edit().putBoolean(K_HIGH_CONTRAST, value).apply()
@@ -1229,6 +1237,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         const val K_FONT_SCALE = "font_scale"
         const val K_REDUCE_MOTION = "reduce_motion"
         const val K_HIGH_CONTRAST = "high_contrast"
+        const val K_EXTERNAL_EMBEDS = "external_embeds"
         const val K_COMPOSE_ON_LEFT = "compose_on_left"
         const val K_COMPOSE_BOTTOM_OFFSET = "compose_bottom_offset"
         const val K_COMPOSE_DRAG_X = "compose_drag_x"

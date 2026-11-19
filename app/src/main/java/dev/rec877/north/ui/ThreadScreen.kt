@@ -54,6 +54,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.ImageLoader
@@ -425,7 +426,7 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
             Avatar(shown.author, 48.dp, loader)
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(shown.author.name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    Text(shown.author.name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     UserBadges(shown.author)
                 }
                 Text("@${shown.author.handle}", color = c.textMuted, fontSize = 15.sp, maxLines = 1)
@@ -449,8 +450,10 @@ private fun MainPostView(vm: MainViewModel, post: Post, loader: ImageLoader, act
                     modifier = Modifier.padding(top = 12.dp),
                     onOpenHashtag = actions.onOpenHashtag,
                 )
-                LinkCards(
+                PostLinks(
                     text = shown.text,
+                    preview = shown.linkPreview,
+                    loader = loader,
                     onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
                 )
             }

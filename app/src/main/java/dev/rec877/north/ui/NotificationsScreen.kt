@@ -218,7 +218,7 @@ private fun NotificationRow(
                     // 実績の説明などは行わない（表示名のみ）
                 } else if (firstActor != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text(name, color = c.text, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                         UserBadges(firstActor)
                     }
                     Text(tail + notificationAction(n.kind), color = c.text, fontSize = 15.sp, lineHeight = 20.sp)

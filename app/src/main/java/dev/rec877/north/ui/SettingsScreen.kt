@@ -134,6 +134,7 @@ fun SettingsScreen(vm: MainViewModel) {
     val c = North.colors
     Column(Modifier.fillMaxSize().background(c.bg)) {
         SettingsHeader("アプリのカスタマイズ", onBack)
+        SettingSwitch("リンクのプレビューと再生", "YouTube・Xのリンクをアプリ内で表示・再生します。オフにするとYouTube・Xへの通信は行いません", vm.externalEmbeds, vm::updateExternalEmbeds)
         Text("投稿ボタン", color = c.text, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 6.dp))
         Text("ナビゲーションや端末固有の操作領域と重なる場合に、位置を変更できます。", color = c.textMuted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp))
         Box(Modifier.padding(16.dp).fillMaxWidth().clip(CircleShape).background(c.accent).clickable { vm.setComposeButtonEditing(true); vm.popToRoot() }.padding(vertical = 14.dp), contentAlignment = Alignment.Center) {

@@ -10,6 +10,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -174,6 +176,7 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions, pinned: Bool
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         NorthIcon(NIcons.Repost, c.textMuted, 14.dp, modifier = Modifier.size(14.dp))
+                        // 名前だけが省略され、「さんがリポストしました」は必ず残る（バッジは出さない）
                         Text(
                             post.author.name,
                             color = c.textMuted,
@@ -183,41 +186,12 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions, pinned: Bool
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false),
                         )
-                        UserBadges(post.author)
-                        Text("さんがリポストしました", color = c.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text("さんがリポストしました", color = c.textMuted, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                     }
                 }
 
-                // 名前 @handle · 時間
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        shown.author.name,
-                        color = c.text,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier
-                            .weight(1f, fill = false)
-                            .clickable { actions.onOpenUser(shown.author) },
-                    )
-                    UserBadges(shown.author)
-                    Text(
-                        "@${shown.author.handle}",
-                        color = c.textMuted,
-                        fontSize = 15.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = 4.dp).weight(1f, fill = false),
-                    )
-                    Text(
-                        " · ${relativeTime(shown.createdAt)}",
-                        color = c.textMuted,
-                        fontSize = 15.sp,
-                        maxLines = 1,
-                    )
-                    PostMoreButton(shown, actions)
-                }
+                // 名前 + バッジ / @handle · 時間。バッジが多くて入りきらないときは、名前を削らずに2行目へ送る
+                AuthorHeader(shown, actions)
 
                 if (shown.unavailable) {
                     Text("このポストは表示できません", color = c.textMuted, fontSize = 15.sp)
@@ -233,11 +207,12 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions, pinned: Bool
                             onOpenPost = { actions.onOpenPost(shown) },
                             onOpenHashtag = actions.onOpenHashtag,
                         )
-                        val openUrl: (String) -> Unit = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } }
-                        // APIがリンクのプレビューを返すポスト（ニュースなど）はそれを出し、無いときだけURLのカードにする
-                        val preview = shown.linkPreview?.takeIf { it.url.isNotBlank() }
-                        if (preview != null) LinkPreviewCard(preview, loader, openUrl)
-                        else LinkCards(text = shown.text, onOpenUrl = openUrl)
+                        PostLinks(
+                            text = shown.text,
+                            preview = shown.linkPreview,
+                            loader = loader,
+                            onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
+                        )
                     }
                     if (shown.media.isNotEmpty()) {
                         MediaGrid(
@@ -538,21 +513,24 @@ fun RichPostText(
 
 /** APIにOGP情報がない場合の安全なフォールバック。外部サイトへ本文を送らず、URLだけをカード化する。 */
 @Composable
-fun LinkCards(text: String, onOpenUrl: (String) -> Unit) {
-    val c = North.colors
-    val urls = remember(text) {
+fun LinkCards(text: String, onOpenUrl: (String) -> Unit, skip: Set<String> = emptySet()) {
+    val urls = remember(text, skip) {
         urlPattern.findAll(text).map { it.value.trimEnd('.', ',', '!', '?', '。', '、', ')', ']', '}') }
-            .filter { it.isNotBlank() }.distinct().take(2).toList()
+            .filter { it.isNotBlank() && it !in skip }.distinct().take(2).toList()
     }
-    urls.forEach { url ->
-        val host = remember(url) { Uri.parse(url).host ?: url }
-        Column(
-            Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp))
-                .border(1.dp, c.border, RoundedCornerShape(12.dp)).clickable { onOpenUrl(url) }.padding(12.dp),
-        ) {
-            Text(host, color = c.text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(url, color = c.textMuted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
-        }
+    urls.forEach { url -> LinkUrlCard(url, onOpenUrl) }
+}
+
+@Composable
+fun LinkUrlCard(url: String, onOpenUrl: (String) -> Unit) {
+    val c = North.colors
+    val host = remember(url) { Uri.parse(url).host ?: url }
+    Column(
+        Modifier.fillMaxWidth().padding(top = 8.dp).clip(RoundedCornerShape(12.dp))
+            .border(1.dp, c.border, RoundedCornerShape(12.dp)).clickable { onOpenUrl(url) }.padding(12.dp),
+    ) {
+        Text(host, color = c.text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(url, color = c.textMuted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
     }
 }
 
@@ -674,6 +652,47 @@ fun PollCard(post: Post, poll: Poll, onVote: (Post, PollOption) -> Unit) {
     }
 }
 
+/**
+ * 一覧のポスト上部: 名前 + バッジ、@handle · 時間、右端に「…」。
+ * FlowRow なので、バッジが増えて1行に収まらないときは @handle · 時間 が2行目へ回り、
+ * 名前が「AKIZ…」のように削られない。それでも長い名前だけは1行に省略する。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun AuthorHeader(post: Post, actions: PostActions) {
+    val c = North.colors
+    Row(verticalAlignment = Alignment.Top) {
+        FlowRow(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            itemVerticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    post.author.name,
+                    color = c.text,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .clickable { actions.onOpenUser(post.author) },
+                )
+                UserBadges(post.author)
+            }
+            Text(
+                "@${post.author.handle} · ${relativeTime(post.createdAt)}",
+                color = c.textMuted,
+                fontSize = 15.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        PostMoreButton(post, actions)
+    }
+}
+
 /** 認証済み・非公開アカウントであることを、プロフィール以外の投稿一覧でも明示する。 */
 @Composable
 fun UserBadges(user: User, compact: Boolean = true) {
@@ -689,6 +708,7 @@ fun UserBadges(user: User, compact: Boolean = true) {
 }
 
 /** 引用しているポスト: 角丸の枠の中に、投稿者・本文・画像を小さく出す。タップでそのポストへ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun QuotedPost(q: Post, loader: ImageLoader, actions: PostActions) {
     val c = North.colors
@@ -702,25 +722,33 @@ fun QuotedPost(q: Post, loader: ImageLoader, actions: PostActions) {
             .clickable { actions.onOpenPost(q) }
             .padding(12.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Avatar(q.author, 20.dp, loader)
-            Text(
-                q.author.name,
-                color = c.text,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
-            UserBadges(q.author)
-            Text(
-                "@${q.author.handle} · ${relativeTime(q.createdAt)}",
-                color = c.textMuted,
-                fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            FlowRow(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                itemVerticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        q.author.name,
+                        color = c.text,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    UserBadges(q.author)
+                }
+                Text(
+                    "@${q.author.handle} · ${relativeTime(q.createdAt)}",
+                    color = c.textMuted,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
         if (q.unavailable) {
             Text("このポストは表示できません", color = c.textMuted, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -69,6 +70,7 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import dev.rec877.north.User
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -124,6 +126,9 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
 
     val stack = vm.backStack
     val top = stack.lastOrNull()
+
+    // 横向きのスマホ・タブレット: 下部ナビをやめて左のレール + 中央の幅を絞ったカラムにする（AndroidのXと同じ構成）
+    val wide = LocalConfiguration.current.screenWidthDp >= 600
 
     fun selectTab(i: Int) {
         // 詳細画面を見ている最中でも、ホームを押せば戻る操作なしでTLへ復帰する。
@@ -204,7 +209,21 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
         )
     }
 
-    Column(Modifier.fillMaxSize().background(c.bg).windowInsetsPadding(WindowInsets.safeDrawing)) {
+    Row(Modifier.fillMaxSize().background(c.bg).windowInsetsPadding(WindowInsets.safeDrawing)) {
+    if (wide) {
+        SideRail(
+            selected = tab,
+            unread = vm.notif.unread,
+            dmUnread = vm.dmUnread,
+            me = ui.me,
+            loader = loader,
+            onSelect = ::selectTab,
+            onAvatar = { accountDrawerOpen = true },
+        )
+        Box(Modifier.fillMaxHeight().width(1.dp).background(c.border))
+    }
+    Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+    Column(Modifier.fillMaxHeight().widthIn(max = if (wide) 600.dp else 4000.dp).fillMaxWidth()) {
         ui.message?.let { msg ->
             Row(
                 Modifier
@@ -312,7 +331,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             }
         }
 
-        if (!imeOpen) {
+        if (!imeOpen && !wide) {
             BottomBar(
                 selected = tab,
                 unread = vm.notif.unread,
@@ -321,14 +340,19 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             )
         }
     }
+    }
+    if (wide) Box(Modifier.fillMaxHeight().width(1.dp).background(c.border))
+    }
 
     // どのタブ・プロフィール画面からも投稿できる、モバイルWeb版相当の投稿ボタン。
     if (!imeOpen && tab != 3 && top != dev.rec877.north.Dest.SETTINGS) {
         // 下部ナビの通知アイコンと重ならないよう、FABはナビの上に十分な余白を取る。
+        val fabBase = if (wide) Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing) else Modifier.fillMaxSize()
+        val fabBottom = if (wide) 20.dp else vm.composeButtonBottomOffset.dp
         val fabPosition = if (vm.composeButtonOnLeft) {
-            Modifier.fillMaxSize().padding(start = 18.dp, bottom = vm.composeButtonBottomOffset.dp)
+            fabBase.padding(start = 18.dp, bottom = fabBottom)
         } else {
-            Modifier.fillMaxSize().padding(end = 18.dp, bottom = vm.composeButtonBottomOffset.dp)
+            fabBase.padding(end = 18.dp, bottom = fabBottom)
         }
         Box(fabPosition, contentAlignment = if (vm.composeButtonOnLeft) Alignment.BottomStart else Alignment.BottomEnd) {
             val density = LocalDensity.current
@@ -442,6 +466,75 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
             text = { Text("North ${update.version} への緊急アップデートが必要です。\n\n${update.notes.ifBlank { "更新内容はリリースページで確認できます。" }}\n\nダウンロード完了後、通知からインストールを承認してください。", color = c.textMuted) },
             confirmButton = { TextButton(onClick = { vm.downloadUpdate(update) }) { Text("ダウンロードして更新", color = c.accent) } },
         )
+    }
+}
+
+/** 横向き・タブレット用の左ナビ。アイコンは下部ナビと同じ4つ。上にアカウントのアバター。 */
+@Composable
+private fun SideRail(
+    selected: Int,
+    unread: Int,
+    dmUnread: Int,
+    me: User?,
+    loader: ImageLoader,
+    onSelect: (Int) -> Unit,
+    onAvatar: () -> Unit,
+) {
+    val c = North.colors
+    Column(
+        Modifier.fillMaxHeight().width(72.dp).background(c.bg),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(10.dp))
+        if (me != null) Avatar(me, 36.dp, loader, Modifier.clickable(onClick = onAvatar))
+        else Box(Modifier.size(36.dp).clip(CircleShape).background(c.elev3).clickable(onClick = onAvatar))
+        Spacer(Modifier.weight(1f))
+        listOf(
+            Triple(NIcons.Home, "ホーム", 0),
+            Triple(NIcons.Search, "検索", 1),
+            Triple(NIcons.Bell, "通知", 2),
+            Triple(NIcons.Message, "DM", 3),
+        ).forEach { (icon, label, i) ->
+            val count = when (i) { 2 -> unread; 3 -> dmUnread; else -> 0 }
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .semantics { contentDescription = if (count > 0) "$label、未読${count}件" else label }
+                    .clickable(role = Role.Tab) { onSelect(i) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box {
+                    NorthIcon(
+                        icon,
+                        if (i == selected) c.accent else c.textMuted,
+                        26.dp,
+                        filled = i == 0 && selected == 0,
+                        modifier = Modifier.size(26.dp),
+                    )
+                    if (count > 0) {
+                        Box(
+                            Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(x = 10.dp, y = (-4).dp)
+                                .defaultMinSize(minWidth = 18.dp, minHeight = 18.dp)
+                                .clip(CircleShape)
+                                .background(c.accent)
+                                .padding(horizontal = 5.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                if (count > 99) "99+" else count.toString(),
+                                color = c.textOnAccent,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.weight(1f))
     }
 }
 

@@ -16,9 +16,9 @@ import dev.rec877.north.*
 import dev.rec877.north.ui.theme.North
 import okhttp3.OkHttpClient
 
-private data class MediaPrivacy(val active: Boolean = false, val epoch: Int = 0, val detect: Boolean = true,
+internal data class MediaPrivacy(val active: Boolean = false, val epoch: Int = 0, val detect: Boolean = true,
     val account: String? = null, val classifier: OnDeviceMediaClassifier? = null, val foreground: Boolean = true)
-private val LocalMediaPrivacy = compositionLocalOf { MediaPrivacy() }
+internal val LocalMediaPrivacy = compositionLocalOf { MediaPrivacy() }
 internal val LocalMediaAllowed = compositionLocalOf { false }
 
 @Composable
