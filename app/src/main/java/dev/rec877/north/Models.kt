@@ -93,6 +93,17 @@ data class Post(
     /** 編集できる状態か（編集ボタンの出し分けに使う。最終判定はサーバー） */
     val editEligible: Boolean = false,
     val editCount: Int = 0,
+    /** ニュースbotなどのURL付きポストに付く、リンク先のプレビュー情報 */
+    val linkPreview: LinkPreview? = null,
+)
+
+@Serializable
+data class LinkPreview(
+    val url: String = "",
+    val title: String? = null,
+    val description: String? = null,
+    val imageUrl: String? = null,
+    val domain: String? = null,
 )
 
 /** 投稿者(userId)のUserを f で書き換える。リポスト元・引用先の投稿者も対象 */
@@ -180,6 +191,20 @@ fun Post.withoutDeleted(id: String): Post? {
 /** 検索前の画面で表示する、north サーバー集計のトレンド。 */
 @Serializable data class Trend(val tag: String, val count: Int = 0, val isHashtag: Boolean = false)
 @Serializable data class TrendPage(val items: List<Trend> = emptyList())
+
+/** GET north.rip/api/statistics。ranking は累計ポスト数の多い順 */
+@Serializable data class Statistics(
+    val accounts: Int = 0,
+    val posts: Int = 0,
+    val ranking: List<StatsRanker> = emptyList(),
+)
+@Serializable data class StatsRanker(
+    val id: String = "",
+    val name: String = "",
+    val handle: String = "",
+    val avatarUrl: String? = null,
+    val tweetCount: Int = 0,
+)
 
 @Serializable data class NorthList(
     val id: String, val name: String, val description: String? = null,

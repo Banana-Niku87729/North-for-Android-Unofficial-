@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -31,6 +32,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -153,7 +157,7 @@ fun SearchScreen(vm: MainViewModel, loader: ImageLoader, actions: PostActions, l
         }
 
         if (!s.searched) {
-            SearchIdle(vm, loader)
+            SearchIdle(vm, loader, actions)
         } else {
             // ---- タブ（アクセント色の4dp下線）----
             Row(Modifier.fillMaxWidth()) {
@@ -213,16 +217,22 @@ fun SearchScreen(vm: MainViewModel, loader: ImageLoader, actions: PostActions, l
     }
 }
 
-/** 検索前: 最近の検索 + 書き方のヒント */
+/** 検索前: トレンド / ニュース（サイトと同じタブ）+ 最近の検索 + 書き方のヒント */
 @Composable
-private fun SearchIdle(vm: MainViewModel, loader: ImageLoader) {
+private fun SearchIdle(vm: MainViewModel, loader: ImageLoader, actions: PostActions) {
     val c = North.colors
     val s = vm.search
     val candidates = vm.searchCandidates
+    var exploreTab by rememberSaveable { mutableIntStateOf(0) }
+    // 入力中はアカウント候補を出すので、タブは入力が空のときだけ
+    val showTabs = s.input.isBlank()
 
     LaunchedEffect(Unit) { vm.loadTrends() }
 
-    LazyColumn(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize()) {
+    if (showTabs) NorthTabs(listOf("トレンド", "ニュース"), exploreTab) { exploreTab = it }
+    if (showTabs && exploreTab == 1) NewsList(vm, loader, actions)
+    else LazyColumn(Modifier.fillMaxSize()) {
         if (s.input.isNotBlank()) {
             item(key = "candidate_head") {
                 Text(
@@ -250,10 +260,10 @@ private fun SearchIdle(vm: MainViewModel, loader: ImageLoader) {
         } else {
             item(key = "trend_head") {
                 Row(
-                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 6.dp),
+                    Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 0.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("トレンド", color = c.text, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+                    Spacer(Modifier.weight(1f))
                     TextButton(onClick = vm::loadTrends) { Text("更新", color = c.accent, fontSize = 14.sp) }
                 }
             }
@@ -326,6 +336,52 @@ private fun SearchIdle(vm: MainViewModel, loader: ImageLoader) {
                 lineHeight = 22.sp,
                 modifier = Modifier.padding(16.dp),
             )
+        }
+    }
+    }
+}
+
+/** 「ニュース」タブ。ニュースbotなどのポスト（リンクのプレビュー付き）を新しい順に並べる。 */
+@Composable
+private fun NewsList(vm: MainViewModel, loader: ImageLoader, actions: PostActions) {
+    val c = North.colors
+    val listState = rememberLazyListState()
+    LaunchedEffect(Unit) { if (!vm.newsLoaded && !vm.newsLoading) vm.loadNews() }
+
+    LazyColumn(Modifier.fillMaxSize(), state = listState) {
+        item(key = "news_head") {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { vm.loadNews() }) { Text("更新", color = c.accent, fontSize = 14.sp) }
+            }
+        }
+        items(vm.news, key = { "news:${it.id}" }) { post -> PostCard(post, loader, actions) }
+
+        when {
+            vm.newsNextCursor != null -> item(key = "news_more") {
+                // 末尾が見えたら次ページを読む（失敗してもカーソルは変わらないので連打にはならない）
+                LaunchedEffect(vm.newsNextCursor) { vm.loadNews(refresh = false) }
+                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+                }
+            }
+            vm.newsLoading -> item(key = "news_loading") {
+                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(24.dp))
+                }
+            }
+            vm.newsError != null && vm.news.isEmpty() -> item(key = "news_error") {
+                Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(vm.newsError.orEmpty(), color = c.textMuted, fontSize = 14.sp, textAlign = TextAlign.Center)
+                    TextButton(onClick = { vm.loadNews() }) { Text("再読み込み", color = c.accent) }
+                }
+            }
+            vm.newsLoaded && vm.news.isEmpty() -> item(key = "news_empty") {
+                Text("ニュースはありません", color = c.textMuted, fontSize = 15.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(32.dp))
+            }
         }
     }
 }

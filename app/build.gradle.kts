@@ -31,9 +31,11 @@ android {
         applicationId = "dev.rec877.north"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        // F-Droid / 更新判定のため、リリースごとに必ず増やすこと（CIなら -PVERSION_CODE=... で渡せる）。
+        // F-Droid の自動更新検出は、この行の数値リテラルを読むので、既定値は数値のまま残す。
+        versionCode = (findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 10202
         // CI ではタグから -PVERSION_NAME=1.2.3 を渡す。ローカルでは下の既定値。
-        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.1.6"
+        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.2.2"
 
         // x86 / x86_64 は実機でほぼ使われず、LiteRT のネイティブライブラリ分だけ APK が膨らむ。
         // splits ではなく abiFilters にしているのは、UpdateManager が Release の最初の .apk を取るため
@@ -43,6 +45,22 @@ android {
         buildConfigField("String", "BUG_REPORT_ENDPOINT", "\"$bugReportEndpoint\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // 配布形態の違い（コードは src/full と src/fdroid の Distribution.kt）:
+    //   full   = GitHub Releases の APK。アプリ内アップデートと判定モデルの初回ダウンロードあり。
+    //   fdroid = F-Droid 向け。アプリ内アップデート無し、REQUEST_INSTALL_PACKAGES 無し、モデルは同梱のみ。
+    // CI は assembleFullRelease を使い、F-Droid の metadata は gradle: [fdroid] を指定する。
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("full") { dimension = "distribution" }
+        create("fdroid") { dimension = "distribution" }
+    }
+
+    // Google 署名用の依存関係メタデータ(暗号化ブロブ)をAPKへ入れない。F-Droid の再現ビルドで差が出るため。
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     signingConfigs {

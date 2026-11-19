@@ -56,6 +56,8 @@ import androidx.compose.ui.unit.sp
 import coil3.ImageLoader
 import coil3.compose.AsyncImage
 import dev.rec877.north.Config
+import dev.rec877.north.LinkPreview
+import androidx.compose.foundation.layout.aspectRatio
 import dev.rec877.north.Media
 import dev.rec877.north.BookmarkFolder
 import dev.rec877.north.Poll
@@ -231,10 +233,11 @@ fun PostCard(post: Post, loader: ImageLoader, actions: PostActions, pinned: Bool
                             onOpenPost = { actions.onOpenPost(shown) },
                             onOpenHashtag = actions.onOpenHashtag,
                         )
-                        LinkCards(
-                            text = shown.text,
-                            onOpenUrl = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } },
-                        )
+                        val openUrl: (String) -> Unit = { url -> runCatching { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(url)) } }
+                        // APIがリンクのプレビューを返すポスト（ニュースなど）はそれを出し、無いときだけURLのカードにする
+                        val preview = shown.linkPreview?.takeIf { it.url.isNotBlank() }
+                        if (preview != null) LinkPreviewCard(preview, loader, openUrl)
+                        else LinkCards(text = shown.text, onOpenUrl = openUrl)
                     }
                     if (shown.media.isNotEmpty()) {
                         MediaGrid(
@@ -549,6 +552,38 @@ fun LinkCards(text: String, onOpenUrl: (String) -> Unit) {
         ) {
             Text(host, color = c.text, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(url, color = c.textMuted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+        }
+    }
+}
+
+/** サイトのリンクカード: 大きな画像・ドメイン・タイトル・説明文。タップでリンク先を開く。 */
+@Composable
+fun LinkPreviewCard(preview: LinkPreview, loader: ImageLoader, onOpenUrl: (String) -> Unit) {
+    val c = North.colors
+    val shape = RoundedCornerShape(16.dp)
+    val image = Config.absUrl(preview.imageUrl)
+    val domain = preview.domain?.takeIf { it.isNotBlank() } ?: remember(preview.url) { Uri.parse(preview.url).host.orEmpty() }
+    Column(
+        Modifier.fillMaxWidth().padding(top = 8.dp).clip(shape)
+            .border(1.dp, c.border, shape).clickable { onOpenUrl(preview.url) },
+    ) {
+        if (image != null) {
+            AsyncImage(
+                model = image,
+                imageLoader = loader,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().aspectRatio(1.91f).background(c.elev3),
+            )
+        }
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            if (domain.isNotEmpty()) Text(domain, color = c.textMuted, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            preview.title?.takeIf { it.isNotBlank() }?.let {
+                Text(it, color = c.text, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            }
+            preview.description?.takeIf { it.isNotBlank() }?.let {
+                Text(it, color = c.textMuted, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            }
         }
     }
 }

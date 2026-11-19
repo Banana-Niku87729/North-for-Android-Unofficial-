@@ -15,7 +15,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -123,7 +127,9 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         idempotent: Boolean = false,
         multipart: RequestBody? = null,
         extraHeaders: Map<String, String> = emptyMap(),
-    ): String = sendRaw(method, path, body, idempotent, multipart, extraHeaders).text
+        base: String = Config.API_BASE,
+        authenticated: Boolean = true,
+    ): String = sendRaw(method, path, body, idempotent, multipart, extraHeaders, base, authenticated).text
 
     private suspend fun sendRaw(
         method: String,
@@ -132,6 +138,8 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
         idempotent: Boolean = false,
         multipart: RequestBody? = null,
         extraHeaders: Map<String, String> = emptyMap(),
+        base: String = Config.API_BASE,
+        authenticated: Boolean = true,
     ): Resp = withContext(Dispatchers.IO) {
         val key = if (idempotent) UUID.randomUUID().toString() else null
 
@@ -140,9 +148,9 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
                 ?: body?.toRequestBody(jsonMedia)
                 ?: if (method in bodyMethods) "".toRequestBody(null) else null
             val req = Request.Builder()
-                .url(Config.API_BASE + path)
-                .header("Authorization", "Bearer $token")
+                .url(base + path)
                 .apply {
+                    if (authenticated) header("Authorization", "Bearer $token")
                     if (key != null) header("Idempotency-Key", key)
                     extraHeaders.forEach { (k, v) -> header(k, v) }
                 }
@@ -151,6 +159,11 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
             return http.newCall(req).execute().use { Resp(it.code, it.body?.string().orEmpty(), it.header("ETag")) }
         }
 
+        if (!authenticated) { // 公開API: トークンは送らない
+            val open = exec("")
+            if (open.code !in 200..299) throw ApiException(open.code, open.text)
+            return@withContext open
+        }
         var token = auth.authToken()
         var r = exec(token.value)
         if (r.code == 401) { // 失効していたら1回だけ更新して再試行（同じIdempotency-Keyで安全に）
@@ -232,6 +245,34 @@ class NorthApi(private val auth: AuthRepository, private val http: OkHttpClient)
 
     suspend fun trends(): List<Trend> =
         json.decodeFromString<Envelope<TrendPage>>(send("GET", "/2/trends")).data.items
+
+    // ---- north.rip/api/... （Web版と同じ系統。{"data":...}の包みが有っても無くても読めるようにする）----
+
+    /** 公開の統計。ログイン不要なのでトークンは送らない */
+    suspend fun statistics(): Statistics =
+        decodeLoose(send("GET", "/api/statistics", base = Config.WEB_BASE, authenticated = false))
+
+    /** 検索画面「ニュース」タブ。ポストと同じ形で、linkPreview が付く */
+    suspend fun news(cursor: String? = null): PostPage =
+        decodeLoose(send("GET", "/api/explore/news" + cursorQuery(cursor), base = Config.WEB_BASE))
+
+    /** 自分をブロックしている人数。応答の形が未確認なので、数値を持つ最初の項目を拾う */
+    suspend fun blockedByCount(): Int? =
+        findCount(json.parseToJsonElement(send("GET", "/api/users/me/blocked-by-count", base = Config.WEB_BASE)))
+
+    private inline fun <reified T> decodeLoose(text: String): T {
+        val root = json.parseToJsonElement(text)
+        val inner = (root as? JsonObject)?.get("data")?.takeIf { it is JsonObject } ?: root
+        return json.decodeFromJsonElement(inner)
+    }
+
+    private fun findCount(el: JsonElement): Int? = when (el) {
+        is JsonPrimitive -> el.intOrNull
+        is JsonObject -> listOf("count", "blockedByCount", "blockedBy", "total")
+            .firstNotNullOfOrNull { k -> el[k]?.let { findCount(it) } }
+            ?: el["data"]?.let { findCount(it) }
+        else -> null
+    }
 
     suspend fun createPost(
         text: String,

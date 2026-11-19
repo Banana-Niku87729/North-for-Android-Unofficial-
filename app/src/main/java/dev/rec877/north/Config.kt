@@ -7,6 +7,9 @@ object Config {
 
     const val API_BASE = "https://api.north.rip"
 
+    /** Web版と同じホストの /api/...（統計・ニュース・ブロックされた人数）。OAuthの /2 とは別系統 */
+    const val WEB_BASE = "https://north.rip"
+
     /** northに登録したリダイレクトURIと1文字も違わないこと（完全一致で検査されます） */
     const val REDIRECT_URI = "https://north-callback.nikubanana809.workers.dev/callback"
 

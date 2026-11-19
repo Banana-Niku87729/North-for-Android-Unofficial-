@@ -16,6 +16,7 @@ object Dest {
     const val LISTS = "lists"
     const val SETTINGS = "settings"
     const val UPDATES = "updates"
+    const val STATISTICS = "statistics"
 }
 
 /** アプリが前面にいるか。前面のときは、バックグラウンド通知を出さない（アプリ内のバッジで足りるため） */

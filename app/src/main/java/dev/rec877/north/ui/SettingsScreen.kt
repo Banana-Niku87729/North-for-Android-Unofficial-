@@ -96,7 +96,8 @@ fun SettingsScreen(vm: MainViewModel) {
                     Switch(checked = vm.bgNotif, onCheckedChange = vm::updateBgNotif)
                 }
             }
-            item("update") {
+            // F-Droid版は更新をF-Droidが行うので、この項目自体を出さない
+            if (dev.rec877.north.Distribution.SELF_UPDATE) item("update") {
                 val update = vm.availableUpdate
                 Row(Modifier.fillMaxWidth().clickable { vm.openUpdates() }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -169,6 +170,7 @@ fun SettingsScreen(vm: MainViewModel) {
             "プライバシーと安全" -> {
                 SettingToggle(vm, "sensitive_media", "センシティブなメディアを表示する", "可能性のあるメディアも表示します")
                 SettingToggle(vm, "allow_messages", "すべてのアカウントからメッセージを受信する", "フォロー外のメッセージはリクエストに表示されます")
+                BlockedByCountRow(vm)
                 SettingLink("Web版のプライバシー設定", "オーディエンスや安全設定をまとめて管理します") { openWeb("/settings/privacy_and_safety") }
                 KeywordSetting(vm)
             }
@@ -182,6 +184,34 @@ fun SettingsScreen(vm: MainViewModel) {
             }
         }
     }
+}
+
+/** あなたをブロックしている人数。取得できないときは「取得できません」と出し、タップで再試行する。 */
+@Composable private fun BlockedByCountRow(vm: MainViewModel) {
+    val c = North.colors
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.loadBlockedByCount() }
+    val count = vm.blockedByCount
+    Row(
+        Modifier.fillMaxWidth().clickable(enabled = !vm.blockedByLoading) { vm.loadBlockedByCount() }.padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("ブロックされている人数", color = c.text, fontWeight = FontWeight.Bold)
+            Text("あなたをブロックしているアカウントの数です（タップで再取得）", color = c.textMuted, fontSize = 13.sp)
+        }
+        Text(
+            when {
+                count != null -> "%,d人".format(java.util.Locale.US, count)
+                vm.blockedByLoading -> "…"
+                vm.blockedByFailed -> "取得できません"
+                else -> "—"
+            },
+            color = if (count == null && vm.blockedByFailed) c.textMuted else c.text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+    HorizontalDivider(color = c.border)
 }
 
 @Composable private fun SettingChoice(label: String, selected: Boolean, choose: () -> Unit) { val c = North.colors; Box(Modifier.clip(CircleShape).background(if (selected) c.accent else c.elev2).clickable(onClick = choose).padding(horizontal = 10.dp, vertical = 8.dp), contentAlignment = Alignment.Center) { Text(label, color = if (selected) c.textOnAccent else c.text, fontSize = 12.sp) } }

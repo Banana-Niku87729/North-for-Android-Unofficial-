@@ -84,6 +84,7 @@ object NIcons {
     val Pin = NIcon(strokes = listOf(
         "m8 4 8 0", "m9 4 1 6-3 3h10l-3-3 1-6", "M12 13v7", "m10 20 2 2 2-2",
     ))
+    val Stats = NIcon(strokes = listOf("M5 20V11", "M12 20V4", "M19 20v-6"), strokeWidth = 2.2f)
     val Sparkle = NIcon(
         fills = listOf("M0 -118 C 1.4 -24 15 -2.2 80 0 C 15 2.2 1.4 24 0 118 C -1.4 24 -15 2.2 -80 0 C -15 -2.2 -1.4 -24 0 -118 Z"),
         viewport = 256f,

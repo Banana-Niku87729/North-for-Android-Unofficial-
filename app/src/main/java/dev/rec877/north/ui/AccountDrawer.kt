@@ -93,6 +93,7 @@ fun AccountDrawer(vm: MainViewModel, loader: ImageLoader, onDismiss: () -> Unit)
                 DrawerRow(NIcons.Person, "プロフィール") { me?.let { onDismiss(); vm.openUser(it.handle) } }
                 DrawerRow(NIcons.Bookmark, "ブックマーク") { onDismiss(); vm.open(dev.rec877.north.Dest.BOOKMARKS) }
                 DrawerRow(NIcons.Person, "リスト") { onDismiss(); vm.open(dev.rec877.north.Dest.LISTS) }
+                DrawerRow(NIcons.Stats, "統計") { onDismiss(); vm.openStatistics() }
                 DrawerRow(NIcons.Sparkle, "設定") { onDismiss(); vm.openSettings() }
                 HorizontalDivider(color = c.border, modifier = Modifier.padding(top = 8.dp))
                 DrawerRow(NIcons.Bell, if (vm.bgNotif) "バックグラウンド通知　オン" else "バックグラウンド通知　オフ") { vm.updateBgNotif(!vm.bgNotif) }

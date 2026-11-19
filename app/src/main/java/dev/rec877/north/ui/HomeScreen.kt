@@ -299,6 +299,7 @@ fun AppShell(vm: MainViewModel, loader: ImageLoader) {
                             top == dev.rec877.north.Dest.LISTS -> ListsScreen(vm)
                             top == dev.rec877.north.Dest.SETTINGS -> SettingsScreen(vm)
                             top == dev.rec877.north.Dest.UPDATES -> UpdateScreen(vm)
+                            top == dev.rec877.north.Dest.STATISTICS -> StatisticsScreen(vm, loader)
                         }
                     }
                 }
@@ -515,7 +516,7 @@ private fun HomeContent(
     val scope = rememberCoroutineScope()
 
     Column(Modifier.fillMaxSize()) {
-        // ---- ヘッダー（サイトの .head: 左にアバター、タイトル、右に切り替えボタン）----
+        // ---- ヘッダー（サイトの .head: 左にアバター、タイトル「ホーム」）----
         Row(
             Modifier.fillMaxWidth().height(53.dp).padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -525,7 +526,7 @@ private fun HomeContent(
             else Box(Modifier.size(32.dp).clip(CircleShape).background(c.elev3).clickable(onClick = onOpenAccountMenu))
             Spacer(Modifier.width(12.dp))
             Text(
-                if (ui.ranked) "おすすめ" else "最新ポスト",
+                "ホーム",
                 color = c.text,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -533,20 +534,18 @@ private fun HomeContent(
                     scope.launch { listState.animateScrollToItem(0) }
                 },
             )
-            // 「最新ポスト」⇄「おすすめ」の切り替え（サイトの✦ボタン）
-            Box(
-                Modifier.size(40.dp).clip(CircleShape).clickable { vm.toggleRanked() },
-                contentAlignment = Alignment.Center,
-            ) {
-                NorthIcon(
-                    NIcons.Sparkle,
-                    if (ui.ranked) c.accent else c.textMuted,
-                    20.dp,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
         }
         HorizontalDivider(color = c.border)
+        // 「おすすめ」⇄「最新ポスト」の切り替え（サイトのタブ。以前は✦アイコンだった）。
+        // 選択中のタブをもう一度押すと先頭へ戻る。
+        NorthTabs(
+            labels = listOf("おすすめ", "最新ポスト"),
+            selected = if (ui.ranked) 0 else 1,
+        ) { index ->
+            val wantRanked = index == 0
+            if (wantRanked != ui.ranked) vm.toggleRanked()
+            else scope.launch { listState.animateScrollToItem(0) }
+        }
 
         PullToRefreshBox(
             isRefreshing = ui.refreshing,

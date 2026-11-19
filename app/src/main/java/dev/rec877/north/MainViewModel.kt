@@ -184,6 +184,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var trendsLoading by mutableStateOf(false)
         private set
 
+    /** 検索画面「ニュース」タブ（north.rip/api/explore/news） */
+    var news by mutableStateOf<List<Post>>(emptyList())
+        private set
+    var newsNextCursor by mutableStateOf<String?>(null)
+        private set
+    var newsLoading by mutableStateOf(false)
+        private set
+    var newsLoaded by mutableStateOf(false)
+        private set
+    var newsError by mutableStateOf<String?>(null)
+        private set
+    private var newsGeneration = 0
+
+    /** 統計画面（north.rip/api/statistics） */
+    var stats by mutableStateOf<Statistics?>(null)
+        private set
+    var statsLoading by mutableStateOf(false)
+        private set
+    var statsError by mutableStateOf<String?>(null)
+        private set
+
+    /** 自分をブロックしている人数（設定 › プライバシーと安全）。null=未取得/取得不可 */
+    var blockedByCount by mutableStateOf<Int?>(null)
+        private set
+    var blockedByLoading by mutableStateOf(false)
+        private set
+    var blockedByFailed by mutableStateOf(false)
+        private set
+
     var notif by mutableStateOf(NotifState())
         private set
 
@@ -258,7 +287,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             loadTrends()
             if (bgNotif) BackgroundNotifications.enable(app)
         }
-        checkForUpdates()
+        if (Distribution.SELF_UPDATE) checkForUpdates()
     }
 
     fun authorizeUri(): Uri = auth.buildAuthorizeUri()
@@ -287,6 +316,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         popToRoot()
         search = SearchState(history = loadHistory())
         notif = NotifState()
+        resetAccountScopedWebData()
         ui = UiState(loggedIn = true)
         refresh()
         loadTrends()
@@ -304,6 +334,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ui = UiState(loggedIn = stillLoggedIn)
         search = SearchState(history = loadHistory())
         notif = NotifState()
+        resetAccountScopedWebData()
         if (stillLoggedIn) {
             refresh()
             loadTrends()
@@ -629,6 +660,85 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * ニュースタブの取得。refresh=true で先頭から取り直し、false で続きのページを読む。
+     * 失敗しても赤いバーは出さず、タブ内にだけ表示する（トレンドが取れなくても他の操作を邪魔しないため）。
+     */
+    fun loadNews(refresh: Boolean = true) {
+        val cursor = if (refresh) null else (newsNextCursor ?: return)
+        if (newsLoading && !refresh) return
+        val gen = if (refresh) ++newsGeneration else newsGeneration
+        newsLoading = true
+        if (refresh) newsError = null
+        viewModelScope.launch {
+            try {
+                val page = api.news(cursor)
+                if (gen != newsGeneration) return@launch
+                rememberUsers(page.items.map { it.author })
+                news = (if (refresh) page.items else news + page.items).distinctBy { it.id }
+                newsNextCursor = page.nextCursor
+                newsLoaded = true
+                newsError = null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: NotLoggedInException) {
+                if (gen == newsGeneration) { popToRoot(); ui = UiState(loggedIn = false, message = "もう一度ログインしてください") }
+            } catch (e: Exception) {
+                if (gen == newsGeneration) newsError = e.message ?: "ニュースを読み込めませんでした"
+            } finally {
+                if (gen == newsGeneration) newsLoading = false
+            }
+        }
+    }
+
+    fun openStatistics() = open(Dest.STATISTICS)
+
+    fun loadStats() {
+        if (statsLoading) return
+        statsLoading = true
+        statsError = null
+        viewModelScope.launch {
+            try {
+                stats = api.statistics()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                statsError = e.message ?: "統計を読み込めませんでした"
+            } finally {
+                statsLoading = false
+            }
+        }
+    }
+
+    /** 失敗しても画面全体のエラーにはしない（この項目だけ「取得できません」と表示する） */
+    fun loadBlockedByCount() {
+        if (blockedByLoading) return
+        blockedByLoading = true
+        blockedByFailed = false
+        val accountId = auth.activeAccountId()
+        viewModelScope.launch {
+            try {
+                val n = api.blockedByCount()
+                if (accountId != auth.activeAccountId()) return@launch
+                blockedByCount = n
+                blockedByFailed = n == null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (accountId == auth.activeAccountId()) blockedByFailed = true
+            } finally {
+                blockedByLoading = false
+            }
+        }
+    }
+
+    /** アカウントを切り替えたとき、前のアカウントの結果を引き継がない */
+    private fun resetAccountScopedWebData() {
+        newsGeneration++
+        news = emptyList(); newsNextCursor = null; newsLoaded = false; newsLoading = false; newsError = null
+        blockedByCount = null; blockedByLoading = false; blockedByFailed = false
+    }
+
     /** TL・検索・プロフィールで見つけたアカウントを、候補用に端末内で覚える。 */
     fun rememberUsers(users: Iterable<User>) {
         users.forEach { user ->
@@ -738,9 +848,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openSettings() = open(Dest.SETTINGS)
 
-    fun openUpdates() = open(Dest.UPDATES)
+    fun openUpdates() { if (Distribution.SELF_UPDATE) open(Dest.UPDATES) }
 
     fun checkForUpdates() = launchSafely(onError = { updatesLoading = false }) {
+        if (!Distribution.SELF_UPDATE) return@launchSafely // F-Droid版は更新をF-Droidに任せる
         updatesLoading = true
         val releases = UpdateManager(http, getApplication()).releases()
         releaseUpdates = releases
@@ -748,6 +859,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         updatesLoading = false
     }
     fun downloadUpdate(update: AppUpdate? = availableUpdate) {
+        if (!Distribution.SELF_UPDATE) return
         val target = update ?: return
         if (!isVersionNewer(target.version, BuildConfig.VERSION_NAME)) {
             ui = ui.copy(message = "North ${BuildConfig.VERSION_NAME} はすでにインストール済みです。")
@@ -993,12 +1105,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun patchUser(userId: String, f: (User) -> User) {
         ui = ui.copy(posts = ui.posts.map { it.withAuthorPatched(userId, f) })
         search = search.copy(results = search.results.map { it.withAuthorPatched(userId, f) })
+        news = news.map { it.withAuthorPatched(userId, f) }
         screens.values.toList().forEach { it.patchUser(userId, f) }
     }
 
     private fun removeAuthorPosts(userId: String) {
         ui = ui.copy(posts = ui.posts.mapNotNull { it.withoutAuthor(userId) })
         search = search.copy(results = search.results.mapNotNull { it.withoutAuthor(userId) })
+        news = news.mapNotNull { it.withoutAuthor(userId) }
         screens.values.toList().forEach { it.removeAuthor(userId) }
     }
 
@@ -1040,6 +1154,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         ui = UiState(loggedIn = stillLoggedIn)
         search = SearchState(history = search.history)
         notif = NotifState()
+        resetAccountScopedWebData()
         notifVisible = false
         if (stillLoggedIn) {
             refresh()
@@ -1053,6 +1168,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun updatePost(id: String, f: (Post) -> Post) {
         ui = ui.copy(posts = ui.posts.map { it.patched(id, f) })
         search = search.copy(results = search.results.map { it.patched(id, f) })
+        news = news.map { it.patched(id, f) }
         screens.values.toList().forEach { it.patch(id, f) }
     }
 
@@ -1071,6 +1187,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             me = ui.me?.let { me -> if (me.pinnedTweet?.id == id) me.copy(pinnedTweet = null) else me },
         )
         search = search.copy(results = search.results.mapNotNull { it.withoutDeleted(id) })
+        news = news.mapNotNull { it.withoutDeleted(id) }
         screens.values.toList().forEach { it.removePost(id) }
     }
 

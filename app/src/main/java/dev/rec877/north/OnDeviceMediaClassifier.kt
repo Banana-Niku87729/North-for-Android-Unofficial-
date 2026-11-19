@@ -118,6 +118,8 @@ class OnDeviceMediaClassifier(private val context: Context) {
     /** モデルが端末内にあれば true。なければ取得して SHA-256 を検証し、原子的に配置する。 */
     private suspend fun ensureModel(client: OkHttpClient): Boolean {
         if (modelFile.isFile && modelFile.length() > 0) return true
+        // 外部取得を行わない配布形態(F-Droid版)は、APKに同梱されたモデルだけを使う。
+        if (!Distribution.MODEL_DOWNLOAD) return installBundledModel()
         if (System.currentTimeMillis() - lastDownloadFailureAt < RETRY_COOLDOWN_MS) return false
         val part = File(modelFile.parentFile, "nsfw.tflite.part")
         return try {
@@ -151,6 +153,33 @@ class OnDeviceMediaClassifier(private val context: Context) {
         } catch (_: Exception) {
             part.delete()
             lastDownloadFailureAt = System.currentTimeMillis()
+            false
+        }
+    }
+
+    /** assets/care/nsfw.tflite（同梱時のみ存在）を filesDir へ展開する。SHA-256が合わなければ使わない。 */
+    private fun installBundledModel(): Boolean {
+        val part = File(modelFile.parentFile, "nsfw.tflite.part")
+        return try {
+            modelFile.parentFile?.mkdirs()
+            val digest = MessageDigest.getInstance("SHA-256")
+            context.assets.open("care/nsfw.tflite").use { input ->
+                part.outputStream().use { out ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buffer)
+                        if (n < 0) break
+                        digest.update(buffer, 0, n)
+                        out.write(buffer, 0, n)
+                    }
+                }
+            }
+            val actual = digest.digest().joinToString("") { "%02x".format(it) }
+            if (!actual.equals(Config.NSFW_MODEL_SHA256, ignoreCase = true)) throw IOException("bundled model hash mismatch")
+            if (!part.renameTo(modelFile)) throw IOException("rename failed")
+            true
+        } catch (_: Exception) {
+            part.delete()
             false
         }
     }
