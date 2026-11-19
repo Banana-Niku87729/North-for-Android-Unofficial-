@@ -27,7 +27,7 @@
 
 </div>
 
-> [!WARNING]
+> [!IMPORTANT]
 > 本アプリは非公式のクライアントアプリです。公式運営とは一切関係ありません。
 
 <div align="center">
