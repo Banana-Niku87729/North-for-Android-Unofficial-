@@ -33,3 +33,7 @@ keystore.properties
 *.keystore
 *.apk
 build/
+
+/release.bat
+/release-note-memo.txt
+scripts/
