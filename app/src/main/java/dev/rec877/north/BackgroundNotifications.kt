@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -69,11 +70,21 @@ class NotificationWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             val items = app.api.notifications(null).items
             // 取得中にアカウントが変わった場合、別アカウントの通知や基準時刻を混ぜない。
             if (app.auth.activeAccountId() != accountId) return Result.success()
+            val pcActive = if (prefs.getBoolean(PcPresenceClient.PREFERENCE_KEY, false)) {
+                try {
+                    PcPresenceClient.isPcActive(app)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("PcPresence", "Presence check failed; keeping mobile notifications enabled", e)
+                    false
+                }
+            } else false
             val newest = items.maxOfOrNull { toMs(it.createdAt) } ?: System.currentTimeMillis()
             val last = prefs.getLong(lastKey, -1L)
 
             // 初回は「ここから先」の基準を決めるだけで、過去の通知は出さない
-            if (last >= 0 && !AppForeground.isForeground) {
+            if (last >= 0 && !AppForeground.isForeground && !pcActive) {
                 val fresh = items
                     .filter { !it.read && toMs(it.createdAt) > last }
                     .sortedBy { toMs(it.createdAt) }

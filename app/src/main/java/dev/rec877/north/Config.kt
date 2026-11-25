@@ -6,6 +6,7 @@ object Config {
     const val CLIENT_ID = "cmurqwr0y00iuwhzkrbfh56bm"
 
     const val API_BASE = "https://api.north.rip"
+    const val PC_PRESENCE_BASE = "https://apinorth.uirusu.com"
 
     /** Web版と同じホストの /api/...（統計・ニュース・ブロックされた人数）。OAuthの /2 とは別系統 */
     const val WEB_BASE = "https://north.rip"

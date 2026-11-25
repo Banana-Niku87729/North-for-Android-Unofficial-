@@ -232,6 +232,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** スマホへのバックグラウンド通知（約15分おきの確認）を使うか */
     var bgNotif by mutableStateOf(prefs.getBoolean(K_BG_NOTIF, true))
         private set
+    var suppressMobileNotificationsWhenPcActive by mutableStateOf(
+        prefs.getBoolean(PcPresenceClient.PREFERENCE_KEY, false)
+    )
+        private set
 
     /** 参考サイトの「表示」設定。既定値は従来どおり midnight / yellow。 */
     var themeColors by mutableStateOf(loadThemeColors())
@@ -384,6 +388,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         bgNotif = on
         prefs.edit().putBoolean(K_BG_NOTIF, on).apply()
         if (on) BackgroundNotifications.enable(getApplication()) else BackgroundNotifications.disable(getApplication())
+    }
+
+    fun updatePcPresenceSuppression(on: Boolean) {
+        suppressMobileNotificationsWhenPcActive = on
+        prefs.edit().putBoolean(PcPresenceClient.PREFERENCE_KEY, on).apply()
     }
 
     /** ベル購読の現在値を端末にも控え、プロフィールへ即時反映する。 */

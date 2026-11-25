@@ -181,6 +181,12 @@ fun SettingsScreen(vm: MainViewModel) {
                 SettingToggle(vm, "filter_new", "新しいアカウントをフィルター", "通知に表示しません")
                 SettingToggle(vm, "filter_no_avatar", "プロフィール画像がないアカウントをフィルター", "通知に表示しません")
                 SettingToggle(vm, "push", "プッシュ通知", "ブラウザ・アプリを閉じていても通知を受け取ります", default = true)
+                SettingSwitch(
+                    "PC使用中は通知を抑制",
+                    "5分間PC操作がないと通知を再開します。アカウント照合のためログイン情報を連携サーバーへ送信します（保存されません）",
+                    vm.suppressMobileNotificationsWhenPcActive,
+                    vm::updatePcPresenceSuppression,
+                )
                 SettingLink("Web版の詳細フィルター", "northの通知フィルターを開きます") { openWeb("/settings/notifications/advanced_filters") }
             }
         }
