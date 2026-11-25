@@ -28,6 +28,10 @@
 
 </div>
 
+## GitHub Release の署名設定
+
+Release workflow でAPKを署名するには、リポジトリの **Settings → Secrets and variables → Actions** に次の4つのRepository secretsを設定してください: `KEYSTORE_BASE64` (keystoreファイルをBase64化した値), `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`。いずれかが未設定なら、署名工程の前に不足しているsecret名を表示して停止します。秘密情報をワークフローやリポジトリへ直接記載しないでください。
+
 > [!IMPORTANT]
 > 本アプリは非公式のクライアントアプリです。公式運営とは一切関係ありません。
 
