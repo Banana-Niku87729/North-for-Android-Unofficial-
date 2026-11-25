@@ -232,6 +232,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** スマホへのバックグラウンド通知（約15分おきの確認）を使うか */
     var bgNotif by mutableStateOf(prefs.getBoolean(K_BG_NOTIF, true))
         private set
+    var suppressMobileNotificationsWhenPcActive by mutableStateOf(
+        prefs.getBoolean(PcPresenceClient.PREFERENCE_KEY, false)
+    )
+        private set
+    var linkedDevicePresence by mutableStateOf<PcPresenceClient.PresenceStatus?>(null)
+        private set
+    var linkedDevicePresenceLoading by mutableStateOf(false)
+        private set
+    var linkedDevicePresenceFailed by mutableStateOf(false)
+        private set
 
     /** 参考サイトの「表示」設定。既定値は従来どおり midnight / yellow。 */
     var themeColors by mutableStateOf(loadThemeColors())
@@ -282,6 +292,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var searchJob: Job? = null
     private var candidateJob: Job? = null
+    private var mobilePresenceJob: Job? = null
+    private var mobilePresenceRequestId = 0
     private val knownUsers = LinkedHashMap<String, User>()
 
     init {
@@ -289,6 +301,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             refresh()
             loadTrends()
             if (bgNotif) BackgroundNotifications.enable(app)
+            if (suppressMobileNotificationsWhenPcActive) refreshMobilePresence()
         }
         if (Distribution.SELF_UPDATE) checkForUpdates()
     }
@@ -305,6 +318,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         resetDmUnread()
         ui = ui.copy(loggedIn = true, message = null, reloginHint = false)
         if (bgNotif) BackgroundNotifications.enable(getApplication())
+        if (suppressMobileNotificationsWhenPcActive) refreshMobilePresence()
         refresh()
         loadTrends()
     }
@@ -312,6 +326,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** アカウント切替時は画面キャッシュや検索結果を引き継がず、新しいアカウントの状態を読み直す。 */
     fun switchAccount(id: String) {
         if (!auth.switchAccount(id)) return
+        mobilePresenceRequestId++
+        mobilePresenceJob?.cancel()
+        linkedDevicePresence = null
+        linkedDevicePresenceFailed = false
         resetDmUnread()
         accounts = auth.accounts()
         searchJob?.cancel()
@@ -324,6 +342,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
         loadTrends()
         if (bgNotif) BackgroundNotifications.enable(getApplication())
+        if (suppressMobileNotificationsWhenPcActive) refreshMobilePresence()
     }
 
     /** サーバー側の連携は維持したまま、この端末だけからアカウントを取り外す。 */
@@ -332,6 +351,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val stillLoggedIn = auth.removeAccount(id)
         accounts = auth.accounts()
         if (!wasActive) return
+        mobilePresenceRequestId++
+        mobilePresenceJob?.cancel()
+        linkedDevicePresence = null
+        linkedDevicePresenceFailed = false
         resetDmUnread()
         popToRoot()
         ui = UiState(loggedIn = stillLoggedIn)
@@ -341,6 +364,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (stillLoggedIn) {
             refresh()
             loadTrends()
+            if (suppressMobileNotificationsWhenPcActive) refreshMobilePresence()
         } else {
             BackgroundNotifications.disable(getApplication())
         }
@@ -384,6 +408,46 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         bgNotif = on
         prefs.edit().putBoolean(K_BG_NOTIF, on).apply()
         if (on) BackgroundNotifications.enable(getApplication()) else BackgroundNotifications.disable(getApplication())
+    }
+
+    fun updatePcPresenceSuppression(on: Boolean) {
+        suppressMobileNotificationsWhenPcActive = on
+        prefs.edit().putBoolean(PcPresenceClient.PREFERENCE_KEY, on).apply()
+        linkedDevicePresence = null
+        linkedDevicePresenceFailed = false
+        syncMobilePresence(on)
+    }
+
+    fun refreshMobilePresence() {
+        if (suppressMobileNotificationsWhenPcActive && mobilePresenceJob?.isActive != true) {
+            syncMobilePresence(true)
+        }
+    }
+
+    private fun syncMobilePresence(online: Boolean) {
+        val accountId = auth.activeAccountId() ?: return
+        val requestId = ++mobilePresenceRequestId
+        mobilePresenceJob?.cancel()
+        linkedDevicePresenceLoading = online
+        linkedDevicePresenceFailed = false
+        mobilePresenceJob = viewModelScope.launch {
+            try {
+                val status = PcPresenceClient.setMobileOnline(nApp, online)
+                if (requestId == mobilePresenceRequestId && accountId == auth.activeAccountId()) {
+                    linkedDevicePresence = status
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (requestId == mobilePresenceRequestId && accountId == auth.activeAccountId()) {
+                    linkedDevicePresenceFailed = true
+                }
+            } finally {
+                if (requestId == mobilePresenceRequestId && accountId == auth.activeAccountId()) {
+                    linkedDevicePresenceLoading = false
+                }
+            }
+        }
     }
 
     /** ベル購読の現在値を端末にも控え、プロフィールへ即時反映する。 */

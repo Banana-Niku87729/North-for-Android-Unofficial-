@@ -13,13 +13,30 @@ val bugReportEndpoint = (findProperty("BUG_REPORT_ENDPOINT") as String?)
     .orEmpty()
 
 // リリース署名: CI では環境変数、ローカルでは keystore.properties(.gitignore 済み)から読む。
-// どちらも無ければ署名なしでビルドされ、デバッグビルドや第三者のビルドは影響を受けない。
+// どちらも無ければ署名なしでビルドし、一部だけ設定されている場合は構成エラーにする。
 val keystoreProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
 fun signingValue(env: String, key: String): String? =
-    System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(key)
+    System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(key)?.takeIf { it.isNotBlank() }
+
+val releaseKeyStorePath = signingValue("KEYSTORE_PATH", "storeFile")
+val releaseKeyStorePassword = signingValue("KEYSTORE_PASSWORD", "storePassword")
+val releaseKeyAlias = signingValue("KEY_ALIAS", "keyAlias")
+val releaseKeyPassword = signingValue("KEY_PASSWORD", "keyPassword")
+val signingValues = listOf(releaseKeyStorePath, releaseKeyStorePassword, releaseKeyAlias, releaseKeyPassword)
+if (signingValues.any { it != null } && signingValues.any { it == null }) {
+    throw GradleException(
+        "Incomplete release signing configuration. Set KEYSTORE_PATH, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD together."
+    )
+}
+if (releaseKeyStorePath != null) {
+    val keyStoreFile = file(releaseKeyStorePath)
+    if (!keyStoreFile.isFile || keyStoreFile.length() == 0L) {
+        throw GradleException("Release keystore is missing or empty: $releaseKeyStorePath")
+    }
+}
 
 android {
     namespace = "dev.rec877.north"
@@ -33,9 +50,9 @@ android {
         targetSdk = 36
         // F-Droid / 更新判定のため、リリースごとに必ず増やすこと（CIなら -PVERSION_CODE=... で渡せる）。
         // F-Droid の自動更新検出は、この行の数値リテラルを読むので、既定値は数値のまま残す。
-        versionCode = (findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 10205
+        versionCode = (findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 10100
         // CI ではタグから -PVERSION_NAME=1.2.3 を渡す。ローカルでは下の既定値。
-        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.2.5"
+        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.1.0"
 
         // x86 / x86_64 は実機でほぼ使われず、LiteRT のネイティブライブラリ分だけ APK が膨らむ。
         // splits ではなく abiFilters にしているのは、UpdateManager が Release の最初の .apk を取るため
@@ -65,19 +82,18 @@ android {
 
     signingConfigs {
         create("release") {
-            val path = signingValue("KEYSTORE_PATH", "storeFile")
-            if (path != null) {
-                storeFile = file(path)
-                storePassword = signingValue("KEYSTORE_PASSWORD", "storePassword")
-                keyAlias = signingValue("KEY_ALIAS", "keyAlias")
-                keyPassword = signingValue("KEY_PASSWORD", "keyPassword")
+            if (releaseKeyStorePath != null) {
+                storeFile = file(releaseKeyStorePath)
+                storePassword = releaseKeyStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
 
     buildTypes {
         release {
-            if (signingConfigs.getByName("release").storeFile != null) {
+            if (releaseKeyStorePath != null) {
                 signingConfig = signingConfigs.getByName("release")
             }
             // 次の段階: true にして isShrinkResources も有効化すると更に小さくなる。
