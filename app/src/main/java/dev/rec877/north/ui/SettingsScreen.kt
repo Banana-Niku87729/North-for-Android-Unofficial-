@@ -19,6 +19,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import dev.rec877.north.MainViewModel
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
@@ -53,6 +55,14 @@ fun SettingsScreen(vm: MainViewModel) {
             "customize" -> "accessibility"
             "display", "accessibility" -> "appearance"
             else -> null
+        }
+    }
+    LaunchedEffect(page, vm.suppressMobileNotificationsWhenPcActive) {
+        if (page == "通知" && vm.suppressMobileNotificationsWhenPcActive) {
+            while (true) {
+                vm.refreshMobilePresence()
+                delay(30_000)
+            }
         }
     }
     when (page) {
@@ -187,9 +197,29 @@ fun SettingsScreen(vm: MainViewModel) {
                     vm.suppressMobileNotificationsWhenPcActive,
                     vm::updatePcPresenceSuppression,
                 )
+                LinkedDevicePresenceStatus(vm)
                 SettingLink("Web版の詳細フィルター", "northの通知フィルターを開きます") { openWeb("/settings/notifications/advanced_filters") }
             }
         }
+    }
+}
+
+@Composable private fun LinkedDevicePresenceStatus(vm: MainViewModel) {
+    val c = North.colors
+    val statusText = when {
+        !vm.suppressMobileNotificationsWhenPcActive -> "連携を有効にすると接続状態を確認できます"
+        vm.linkedDevicePresence != null -> {
+            val status = vm.linkedDevicePresence!!
+            "PC: ${if (status.pcOnline) "オンライン" else "オフライン"} / " +
+                "スマートフォン: ${if (status.mobileOnline) "オンライン" else "オフライン"}"
+        }
+        vm.linkedDevicePresenceLoading -> "接続状態を確認中…"
+        vm.linkedDevicePresenceFailed -> "接続状態を取得できません"
+        else -> "接続状態を確認します"
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
+        Text("PC・スマートフォンの接続状態", color = c.text, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(statusText, color = c.textMuted, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
     }
 }
 

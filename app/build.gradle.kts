@@ -50,9 +50,9 @@ android {
         targetSdk = 36
         // F-Droid / 更新判定のため、リリースごとに必ず増やすこと（CIなら -PVERSION_CODE=... で渡せる）。
         // F-Droid の自動更新検出は、この行の数値リテラルを読むので、既定値は数値のまま残す。
-        versionCode = (findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 10000
+        versionCode = (findProperty("VERSION_CODE") as String?)?.toIntOrNull() ?: 10100
         // CI ではタグから -PVERSION_NAME=1.2.3 を渡す。ローカルでは下の既定値。
-        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.0.0"
+        versionName = (findProperty("VERSION_NAME") as String?) ?: "1.1.0"
 
         // x86 / x86_64 は実機でほぼ使われず、LiteRT のネイティブライブラリ分だけ APK が膨らむ。
         // splits ではなく abiFilters にしているのは、UpdateManager が Release の最初の .apk を取るため

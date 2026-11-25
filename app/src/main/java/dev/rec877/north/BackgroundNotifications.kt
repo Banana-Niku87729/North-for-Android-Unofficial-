@@ -70,16 +70,17 @@ class NotificationWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             val items = app.api.notifications(null).items
             // 取得中にアカウントが変わった場合、別アカウントの通知や基準時刻を混ぜない。
             if (app.auth.activeAccountId() != accountId) return Result.success()
-            val pcActive = if (prefs.getBoolean(PcPresenceClient.PREFERENCE_KEY, false)) {
+            val presenceStatus = if (prefs.getBoolean(PcPresenceClient.PREFERENCE_KEY, false)) {
                 try {
-                    PcPresenceClient.isPcActive(app)
+                    PcPresenceClient.setMobileOnline(app, true)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     Log.w("PcPresence", "Presence check failed; keeping mobile notifications enabled", e)
-                    false
+                    null
                 }
-            } else false
+            } else null
+            val pcActive = presenceStatus?.active ?: false
             val newest = items.maxOfOrNull { toMs(it.createdAt) } ?: System.currentTimeMillis()
             val last = prefs.getLong(lastKey, -1L)
 
