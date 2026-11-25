@@ -42,7 +42,17 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          if ! printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"; then
+          KEYSTORE_BASE64_CLEAN=$(printf '%s' "$KEYSTORE_BASE64" | tr -d '[:space:]')
+          echo "KEYSTORE_BASE64 length after whitespace removal: ${#KEYSTORE_BASE64_CLEAN}"
+          if [[ ! "$KEYSTORE_BASE64_CLEAN" =~ ^[A-Za-z0-9+/]*={0,2}$ ]]; then
+            echo "::error title=Invalid release keystore::KEYSTORE_BASE64 contains characters outside the Base64 alphabet. Secret value was not logged."
+            exit 1
+          fi
+          if (( ${#KEYSTORE_BASE64_CLEAN} % 4 != 0 )); then
+            echo "::error title=Invalid release keystore::KEYSTORE_BASE64 length is not a multiple of 4. Secret value was not logged."
+            exit 1
+          fi
+          if ! printf '%s' "$KEYSTORE_BASE64_CLEAN" | base64 --decode > "$RUNNER_TEMP/release.jks"; then
             echo "::error title=Invalid release keystore::KEYSTORE_BASE64 is not valid base64."
             exit 1
           fi
